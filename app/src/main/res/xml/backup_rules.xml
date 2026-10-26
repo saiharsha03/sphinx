@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and older read these instead (Sphinx needs 12, so this is belt and braces): the same two files, only with
+     client-side encryption. -->
+<full-backup-content>
+    <include domain="file" path="backup/state.bin" requireFlags="clientSideEncryption" />
+    <include domain="file" path="backup/key.bin" requireFlags="clientSideEncryption" />
+</full-backup-content>

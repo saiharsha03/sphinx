@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Google backup (docs/DESIGN.md, "Backup"): only the sealed backup state and its key travel, and only end-to-end
+     encrypted with the phone's screen lock (disableIfNoEncryptionCapabilities). Everything else stays: the prefs are
+     sealed with this phone's Keystore keys and couldn't open anywhere else, the pairings always pair again, and the
+     Keys safe's own files are sealed to this phone's codes key (the backup state carries their contents). -->
+<data-extraction-rules>
+    <cloud-backup disableIfNoEncryptionCapabilities="true">
+        <include domain="file" path="backup/state.bin" />
+        <include domain="file" path="backup/key.bin" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="file" path="backup/state.bin" />
+        <include domain="file" path="backup/key.bin" />
+    </device-transfer>
+</data-extraction-rules>

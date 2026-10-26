@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Every code is a strong fingerprint (BiometricPrompt, no PIN). -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- The approval question and the Copy notification. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- A laptop's request shows over the lock screen. Android 14+ asks you to allow it; Settings points to it. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Optional: open the approval full screen while the phone is in use (a banner otherwise). Nothing else draws. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Sphinx"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Sphinx">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- "Code for github.com?" over the lock screen, from the full-screen notification. Shows when locked and turns
+             the screen on, never dismisses the keyguard. Not exported. -->
+        <activity
+            android:name=".ApproveActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:showWhenLocked="true"
+            android:turnScreenOn="true" />
+
+
+        <!-- Optional (notification access, granted by you in Android's settings): an imported account's app shows a 2FA
+             screen and Sphinx offers its code with Copy; and while a laptop request waits, a code in a text or email from
+             the SMS and mail apps in Domains.TEXT_APPS is offered to send to the laptop. Only matched, never kept. -->
+        <service
+            android:name=".CodeWatcher"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- The share sheet's "Send to laptop": a link, a text or a file, sealed to a paired laptop. -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:label="Send to laptop"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Sphinx">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- A handoff notification's Copy. -->
+        <receiver android:name=".CopyReceiver" android:exported="false" />
+
+        <!-- The fast wake (optional): an FCM data message {"t": "sync"} that may carry the sealed request blobs; anything
+             else is dropped. Firebase is set up only when the build had google-services.json, and stays off until a laptop
+             is paired (auto-init false). Nothing else of Firebase is in the app (no Analytics, no Crashlytics). -->
+        <service android:name=".SphinxMessaging" android:exported="false">
+            <intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter>
+        </service>
+        <meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false" />
+        <meta-data android:name="firebase_analytics_collection_deactivated" android:value="true" />
+        <meta-data android:name="delivery_metrics_exported_to_big_query_enabled" android:value="false" />
+
+    </application>
+</manifest>

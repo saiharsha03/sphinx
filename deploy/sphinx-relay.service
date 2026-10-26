@@ -1,0 +1,52 @@
+[Unit]
+Description=Sphinx relay (sealed 2FA requests between the phone and the laptop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sphinx
+Group=sphinx
+# Settings: SPHINX_REGISTER_TOKEN, and SPHINX_FCM_ACCOUNT when the optional service account is installed.
+EnvironmentFile=/etc/sphinx/relay.env
+Environment=SPHINX_STATE=/var/lib/sphinx/sphinx-relay.json PYTHONDONTWRITEBYTECODE=1
+# The socket's directory (Caddy, group caddy, may connect; nobody else) comes from /etc/tmpfiles.d/sphinx-relay.conf
+# (install.sh): ReadWritePaths needs it to exist before the namespace is set up, which an ExecStartPre is too late for.
+ExecStartPre=+/bin/rm -f /run/sphinx-relay/relay.sock
+ExecStart=/opt/sphinx/venv/bin/uvicorn sphinx_relay:create_app --factory --app-dir /opt/sphinx/app --uds /run/sphinx-relay/relay.sock --no-access-log --timeout-graceful-shutdown 3
+ExecStartPost=+/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do [ -S /run/sphinx-relay/relay.sock ] && exec chmod 660 /run/sphinx-relay/relay.sock; sleep 0.5; done'
+UMask=0007
+StateDirectory=sphinx
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=3
+
+# Hardening: it reads its code and settings, writes only its pairings file and its socket, and talks HTTPS out (FCM).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sphinx /run/sphinx-relay
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

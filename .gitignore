@@ -1,0 +1,28 @@
+# Gradle / Android
+build/
+.gradle/
+.kotlin/
+local.properties
+*.iml
+.idea/
+captures/
+# Never committed: Firebase config, signing keys, keystores
+google-services.json
+*.jks
+*.keystore
+*.p12
+keystore.properties
+# Node
+node_modules/
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+relay/sphinx-relay.json
+# Release artifacts
+*.apk
+*.zip
+/release/
+# This laptop's relay token for the extension (kept outside the repo)
+extension/local.json

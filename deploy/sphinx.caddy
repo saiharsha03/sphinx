@@ -1,0 +1,31 @@
+# Sphinx relay: its own hostname, its own certificate, its own socket. Nothing here is shared with any other site.
+sphinx.example.com {
+	# Every site on this Caddy listens on the public address; without it public traffic reaches another listener.
+	bind 0.0.0.0
+	# The encrypted backup: one ciphertext of the whole state (a 4 MB Keys safe at most, as b64url in JSON).
+	@backup path /v1/backup/*
+	handle @backup {
+		request_body {
+			max_size 10MB
+		}
+		reverse_proxy unix//run/sphinx-relay/relay.sock
+	}
+	# Everything else: blobs of at most 4 KB, and handoff file chunks of at most 512 KiB (about 700 KB as JSON).
+	@relay path /healthz /v1/*
+	handle @relay {
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy unix//run/sphinx-relay/relay.sock
+	}
+	# Only the relay's own routes; everything else is a plain 404.
+	handle {
+		respond 404
+	}
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+}

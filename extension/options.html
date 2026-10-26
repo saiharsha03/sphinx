@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sphinx</title>
+<style>
+  :root { --surface: #1c1916; --raised: #26221d; --ink: #f3ead9; --ink2: #c9bfae; --ink3: #8f8576; --rule: #3a342c; --accent: #e8a33d; --onaccent: #1c1916; }
+  @media (prefers-color-scheme: light) { :root { --surface: #f7f2e8; --raised: #efe7d8; --ink: #24201b; --ink2: #4a433a; --ink3: #7d7366; --rule: #ddd2bf; --accent: #b8741a; --onaccent: #fff; } }
+  body { margin: 0; background: var(--surface); color: var(--ink); font: 15px/22px system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 32px 16px 48px; }
+  .kicker { font-size: 11px; letter-spacing: 1.3px; text-transform: uppercase; color: var(--ink3); }
+  h1 { font-size: 26px; line-height: 31px; font-weight: 500; letter-spacing: -0.6px; margin: 4px 0 4px; }
+  .sub { color: var(--ink3); font-size: 14px; margin: 0 0 24px; }
+  section { border-top: 1px solid var(--rule); padding: 16px 0; }
+  .muted { color: var(--ink3); font-size: 14px; }
+  button { font: 500 15px/20px system-ui, sans-serif; min-height: 44px; padding: 0 16px; border-radius: 22px; border: 0; cursor: pointer; }
+  .primary { background: var(--accent); color: var(--onaccent); }
+  .text { background: none; color: var(--ink); padding: 0 8px; }
+  input { font: inherit; color: var(--ink); background: none; border: 0; border-bottom: 1px solid var(--rule); padding: 8px 0; width: 100%; }
+  input:focus { outline: none; border-bottom: 2px solid var(--accent); }
+  canvas { display: block; margin: 16px 0; border-radius: 8px; max-width: 100%; height: auto; image-rendering: pixelated; }
+  ul { padding-left: 18px; margin: 8px 0; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<main>
+  <div class="kicker">Sphinx</div>
+  <h1>Sphinx</h1>
+  <p class="sub">2FA codes from your phone, each behind your fingerprint.</p>
+
+  <section id="paired" hidden>
+    <div class="kicker">Paired</div>
+    <p id="pairedName"></p>
+    <p class="muted">Relay: <span id="pairedRelay"></span></p>
+    <p class="muted" id="phone"></p>
+    <div class="kicker">Sites it may fill on</div>
+    <ul id="domains"></ul>
+    <p class="muted" id="domainsAt"></p>
+    <p class="muted" id="grants"></p>
+    <div class="row"><button class="primary" id="allow" hidden>Allow on these sites</button></div>
+    <div class="row"><button class="text" id="refresh">Refresh sites</button><button class="text" id="unpair">Unpair</button></div>
+  </section>
+
+  <section id="pair" hidden>
+    <div class="kicker">Pair with your phone</div>
+    <p class="muted">Give the relay's address and name this laptop, then in Sphinx on the phone open Laptops, Pair a laptop, and scan the code.</p>
+    <input id="relay" maxlength="200" placeholder="Relay, like https://relay.example.com" autocomplete="off" spellcheck="false">
+    <input id="token" maxlength="128" placeholder="Relay token (only if your relay asks for one)" autocomplete="off" spellcheck="false" style="margin-top:8px">
+    <input id="name" maxlength="40" placeholder="Laptop name" value="Chrome laptop" style="margin-top:8px">
+    <div class="row" style="margin-top:12px"><button class="primary" id="show">Show the pairing code</button></div>
+    <p class="muted" id="problem"></p>
+    <canvas id="qr" hidden></canvas>
+    <p class="muted" id="wait" hidden>Waiting for the phone. Keep this page open.</p>
+  </section>
+
+  <section>
+    <div class="kicker">What it does</div>
+    <ul class="muted">
+      <li>Runs only on the sites saved on the phone that you allowed here, and their subdomains. It can't read any other page.</li>
+      <li>Your phone asks for your fingerprint every time, even when locked; approving doesn't unlock it.</li>
+      <li>Types an authenticator code into the field and submits its form (your fingerprint was the yes).</li>
+      <li>Asks as soon as a code field appears on a saved site; click the field to ask again whenever none is waiting.</li>
+      <li>A code that comes by text or email while it waits is offered on the phone; your fingerprint sends it, and it is typed in, never submitted.</li>
+      <li>When a saved site's sign-in page opens, the phone asks early; your fingerprint then covers that site's code for 30 seconds, so the code field fills at once.</li>
+      <li>The toolbar icon: green on a saved site or after a fill, saffron and blinking while the phone asks, red when not paired or the phone is asleep or offline, grey on other sites.</li>
+      <li>The relay between them sees sealed blobs only.</li>
+    </ul>
+  </section>
+</main>
+<script type="module" src="options.js"></script>
+</body>
+</html>

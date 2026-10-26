@@ -1,0 +1,52 @@
+{
+ "laptop_priv": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+ "laptop_pub": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw",
+ "phone_priv": "ZWZnaGlqa2xtbm9wcXJzdHV2d3h5ent8fX5_gIGCg4Q",
+ "phone_pub": "VxR2nRFr92Q2rnS8eT0sMK0ZA8WaxSc4BcfiaYtBDDY",
+ "shared": "yepqP3mgALYLB21K_JkLJy8_C1qqPwuHE8IJJz42OGM",
+ "pid": "UFBQUFBQUFBQUFBQUFBQUA",
+ "secret": "yMnKy8zNzs_Q0dLT1NXW1w",
+ "l2p": "NUo6ExSdYw_ccKm_-Jur7VcvYyjULz0k2Wsr2LZV-CU",
+ "p2l": "_5mIjhu-v-Yai6-YwhK-xf-VLK-c2sQj6ZTiDXjh3NE",
+ "relay": "x2G2Ez3MhEWER_KBrpG2Mm8YdekmMNpRRA5Rz_c36_o",
+ "hello": "VxR2nRFr92Q2rnS8eT0sMK0ZA8WaxSc4BcfiaYtBDDaen2dCk6t0Zv-vzwnfkMKGxS4DClEtLfhfOC59hNBK8Q",
+ "qr": "sphinx:1?p=UFBQUFBQUFBQUFBQUFBQUA&k=B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw&s=yMnKy8zNzs_Q0dLT1NXW1w&r=https://relay.example.com&n=Chrome",
+ "request": {
+  "plain": "{\"v\":1,\"kind\":\"code.request\",\"rid\":\"RRRRRRRRRRRRRRRRRRRRRR\",\"body\":{\"host\":\"github.com\",\"user\":\"work\"}}",
+  "ctr": 7,
+  "exp": 1800000000000,
+  "iv": "ERERERERERERERER",
+  "blob": "AXEAAAAAAAAABwAAAaMYXFAAERERERERERERERERFfMqZems0FWqwoJOhuEnGqn8gMgAIm31ThmmqZC09hTmg5fiCIfCyGxOcIuPWoQMcS15qMN6DU-4Zoel92B2mEBY0lbXSWUtikh6LDtxradofIr5sOOzrlCtJx4UV4a3shpEQQGPWPn-32v3VhXakKphPq0X0XE"
+ },
+ "reply": {
+  "plain": "{\"v\":1,\"kind\":\"code.reply\",\"rid\":\"RRRRRRRRRRRRRRRRRRRRRR\",\"body\":{\"ok\":true,\"code\":\"123456\"}}",
+  "ctr": 3,
+  "exp": 1800000000000,
+  "iv": "IiIiIiIiIiIiIiIi",
+  "blob": "AXIAAAAAAAAAAwAAAaMYXFAAIiIiIiIiIiIiIiIinG6Bizw1X0Vg6VfQjFna6zxifrrqINBfuElTerC0OpmuF20YsgRj0Xs_C27QaFNHSaxvhrFevyUCNYlrnLVzTgFtNG8SWpWnZso92R18W891iamR-LfS094VKp57XBuhbEvqdno5CoLTSvwk1w"
+ },
+ "push": {
+  "plain": "{\"v\":1,\"kind\":\"handoff.send\",\"rid\":\"HHHHHHHHHHHHHHHHHHHHHH\",\"body\":{\"type\":\"link\",\"url\":\"https://example.com/a\",\"open\":true}}",
+  "ctr": 2,
+  "exp": 1800000000000,
+  "iv": "MzMzMzMzMzMzMzMz",
+  "blob": "AXAAAAAAAAAAAgAAAaMYXFAAMzMzMzMzMzMzMzMzQduLQ2ZbV7jUm-GkVVMoaC0hqBINiMaSBhOGW01Zr5td6yMKAxxpjrRMmnen9TpZiutOw08qW4Ho07v7kXFf1l5mDN5KdmFel59WFHRpjPVaMIC7PWSc73l_k4aj8WIbphoZsKmD8MsNGaBEP2HeNRvCjQBI8S7fJbHDcF0j_gyCUAkfW5lu84xGvj_g"
+ },
+ "file": {
+  "key": "KCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRkc",
+  "fid": "RkZGRkZGRkZGRkZGRkZGRg",
+  "n": 1,
+  "total": 3,
+  "plain": "aGVsbG8gZmlsZSBoZWxsbyBmaWxlIGhlbGxvIGZpbGUgaGVsbG8gZmlsZSBoZWxsbyBmaWxlIGhlbGxvIGZpbGUgaGVsbG8gZmlsZSBoZWxsbyBmaWxlIGhlbGxvIGZpbGUgaGVsbG8gZmlsZSBoZWxsbyBmaWxlIGhlbGxvIGZpbGUgaGVsbG8gZmlsZSBoZWxsbyBmaWxlIGhlbGxvIGZpbGUgaGVsbG8gZmlsZSBoZWxsbyBmaWxlIGhlbGxvIGZpbGUgaGVsbG8gZmlsZSBoZWxsbyBmaWxlIA",
+  "blob": "dsF4t7BO8wpea6QFCl7YGAlQFMi3Cg7bbM2eb7D4xm095jD105fGmX20XSzg8lRadn3AdZO2KCzNbjpmBwm6uwSCGSZ-JzPRWb8EvB-OjJTSdaKSsqvBkWYfgESBlqqkAhWWrmlaKUddH-bfFwmFDWGVWhOYYs9JNSxzZE57rA7ZYlz-XRcjQy6uhHm61Id72ECYSZyfXIznNXUD06E9gIIarDDYt0v18Ch3tzH2-UWgJrgk4ARnzzSP-pqqFtMoHOKgzM1xAsZHfF9hkuXD8fqttHEKXiVzsrT4Hx_aNLI3gQJcgt6GgMy0XIw"
+ },
+ "sign": {
+  "method": "POST",
+  "path": "/v1/requests",
+  "query": "",
+  "ts": "1800000000",
+  "nonce": "NNNNNNNNNNNNNNNNNNNNNN",
+  "body": "{\"rid\":\"x\"}",
+  "sig": "rU0FzF8hQDTSU4xcjOmf_EmagdAuGB3fzNur9yxKRz4"
+ }
+}
