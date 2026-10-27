@@ -215,5 +215,7 @@
   let timer;
   const later = () => { clearTimeout(timer); timer = setTimeout(() => { page(); scan(); }, 400); };
   later();
-  new MutationObserver(later).observe(document.documentElement, { childList: true, subtree: true });
+  // The page check runs on every change, not only after the page goes quiet: a busy page (AWS redraws for seconds) kept
+  // pushing the debounced one back (2026-10-27, measured ~6 s). ready() is a no-op once readied, so this is cheap.
+  new MutationObserver(() => { if (!readied) page(); later(); }).observe(document.documentElement, { childList: true, subtree: true });
 })();

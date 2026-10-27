@@ -288,7 +288,7 @@ async function register() {
   const matches = granted.filter((o) => wanted.has(o) && !required.has(o));
   await chrome.scripting.unregisterContentScripts({ ids: ["codes"] }).catch(() => {});
   if (matches.length) {
-    await chrome.scripting.registerContentScripts([{ id: "codes", js: ["detect.js", "content.js"], matches, allFrames: false, runAt: "document_idle", persistAcrossSessions: false }]);
+    await chrome.scripting.registerContentScripts([{ id: "codes", js: ["detect.js", "content.js"], matches, allFrames: false, runAt: "document_end", persistAcrossSessions: false }]);
   }
   return matches;
 }
