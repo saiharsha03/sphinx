@@ -81,11 +81,17 @@ object RelayClient {
         } finally { c.disconnect() }
     }
 
-    /** A GET whose body is streamed into [sink] as it arrives (the app's APK), never held in memory; [onOpen] gets the connection (to disconnect it from elsewhere). */
-    private fun stream(base: String, path: String, headers: Map<String, String>, sink: OutputStream, readMs: Int, onOpen: (HttpURLConnection) -> Unit = {}) {
+    /**
+     * A GET whose body is streamed into [sink] as it arrives (the app's APK), never held in memory; [onOpen] gets the
+     * connection (to disconnect it from elsewhere) and may throw to refuse the body. Returns the status (200, or 206 for a range).
+     */
+    private fun stream(base: String, path: String, headers: Map<String, String>, sink: OutputStream, readMs: Int, onOpen: (HttpURLConnection) -> Unit = {}): Int {
         val c = open(base, "GET", path, null, headers, readMs)
-        onOpen(c)
-        try { c.inputStream.use { it.copyTo(sink) } } finally { c.disconnect() }
+        try {
+            onOpen(c)
+            c.inputStream.use { it.copyTo(sink) }
+            return c.responseCode
+        } finally { c.disconnect() }
     }
 
     private fun signed(p: Pairing, method: String, path: String, body: Any?, readMs: Int = 15_000, query: String = ""): String? {
@@ -140,10 +146,14 @@ object RelayClient {
     /** The relay's current release as its JSON text, or null when it has none (404). */
     fun app(p: Pairing): String? = try { signed(p, "GET", "/v1/app", null) } catch (e: Failed) { if (e.status == 404) null else throw e }
 
-    /** The release's APK, streamed into [sink] (signed like every call; a long read timeout for the file). */
-    fun appFile(p: Pairing, sink: OutputStream, onOpen: (HttpURLConnection) -> Unit = {}) {
+    /**
+     * The release's APK from byte [from] on, streamed into [sink] (signed like every call; the Range header is outside
+     * the signature). Returns 206 when the relay served the range, 200 when it sent the whole file from the start.
+     */
+    fun appFile(p: Pairing, sink: OutputStream, from: Long = 0L, onOpen: (HttpURLConnection) -> Unit = {}): Int {
         val path = "/v1/app/file"
-        val h = SphinxCrypto.signed(p.relayKey, p.pid, "GET", URL(p.relay + path).path, "", ByteArray(0), System.currentTimeMillis())
-        stream(p.relay, path, h, sink, readMs = 120_000, onOpen = onOpen)
+        val h = SphinxCrypto.signed(p.relayKey, p.pid, "GET", URL(p.relay + path).path, "", ByteArray(0), System.currentTimeMillis()).toMutableMap()
+        if (from > 0) h["Range"] = "bytes=$from-"
+        return stream(p.relay, path, h, sink, readMs = 60_000, onOpen = onOpen)
     }
 }

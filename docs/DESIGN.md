@@ -217,7 +217,9 @@ first update crawled at 20 KB/s until the app was reopened). The installer opens
 drops a start from the background); off screen, a "downloaded, tap to install" notification brings the app back and
 `Update.resume` opens it. A downloaded file that still passes every check is reused by the next tap (a check that
 throws counts as a fail). A newer release is also a popup over the home screen (`UpdateDialog`): Later puts it away for
-that release until the app next opens.
+that release until the app next opens. The bytes arrive into a `.part` file and a broken transfer goes on from its end
+(`Range: bytes=N-`, which the relay's `FileResponse` honours with 206; a 200 instead starts over), retried by itself
+a dozen times: the reverse proxy cuts a response at 300 s and a lossy link can run at tens of KB/s.
 
 ## Pairing
 The extension's options page shows a QR: `sphinx:1?p=<pairing id>&k=<laptop X25519 public>&s=<16-byte secret>&r=<relay>&n=<name>[&t=<relay token>]`.

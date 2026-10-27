@@ -32,12 +32,12 @@ def client(relay):
     return c
 
 
-def call(client, method, path, body=b"", key=KEY, pid=PID, ts=None, nonce=None, query=""):
+def call(client, method, path, body=b"", key=KEY, pid=PID, ts=None, nonce=None, query="", extra=None):
     ts = str(int(time.time()) if ts is None else ts)
     nonce = nonce or secrets.token_urlsafe(16)
     h = {"x-sphinx-pid": pid, "x-sphinx-ts": ts, "x-sphinx-nonce": nonce, "content-type": "application/json",
          "x-sphinx-sig": hr.sign(key, method, path, query, ts, nonce, body)}
-    return client.request(method, path + ("?" + query if query else ""), content=body or None, headers=h)
+    return client.request(method, path + ("?" + query if query else ""), content=body or None, headers={**h, **(extra or {})})
 
 
 def ask(client, rid="r" * 22, blob=None, **kw):

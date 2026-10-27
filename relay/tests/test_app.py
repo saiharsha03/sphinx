@@ -52,6 +52,10 @@ def test_a_release_is_served_with_its_sha(relay, tmp_path):
     write_release(tmp_path, {**META, "versionCode": 8, "sha256": hashlib.sha256(apk2).hexdigest(), "size": len(apk2)}, apk2)
     assert call(c, "GET", "/v1/app").json()["versionCode"] == 8
     assert call(c, "GET", "/v1/app/file").content == apk2
+    # A broken download goes on from where it stopped: a Range gets 206 and the tail (outside the signature).
+    r = call(c, "GET", "/v1/app/file", extra={"range": "bytes=100-"})
+    assert r.status_code == 206 and r.content == apk2[100:] and r.headers["content-range"] == f"bytes 100-{len(apk2) - 1}/{len(apk2)}"
+    assert r.headers["x-sphinx-sha256"] == hashlib.sha256(apk2).hexdigest()
 
 
 def test_a_bad_release_is_no_release(relay, tmp_path, caplog):

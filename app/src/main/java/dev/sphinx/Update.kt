@@ -211,31 +211,50 @@ object Update {
         // never showed, the next tap downloaded all 31 MB a second time).
         val kept = checks(app, r, file)
         if (!kept) {
-            set(UpdateState.Downloading(r))
-            dir.listFiles()?.forEach { it.delete() }
+            // The bytes so far live in a part file (this release's: another release's part goes), and the download
+            // goes on from its end with a Range request, retrying by itself: Caddy cuts a response at 300 s and a
+            // lossy Wi-Fi link gave 45 KB/s, so one 31 MB transfer never finished (the owner, 2026-10-27).
+            val part = File(dir, r.file + ".part")
+            dir.listFiles()?.filter { it != part }?.forEach { it.delete() }
+            set(UpdateState.Downloading(r, part.length()))
             val store = SphinxStore.get(app)
             val pairings = store.pairings().filter { !it.signer }.sortedBy { if (it.pid == from) 0 else 1 }
             val p = pairings.firstOrNull() ?: return set(UpdateState.Failed(r, "No laptop paired: nowhere to fetch it from."))
-            try {
-                var last = 0L
-                cancelled = false
-                val started = System.currentTimeMillis()
-                file.outputStream().use { out ->
-                    RelayClient.appFile(p, Capped(out, r.size.toLong()) { n ->
-                        if (cancelled || System.currentTimeMillis() - started > DEADLINE_MS) throw Stopped()
-                        if (n - last >= STEP || n == r.size.toLong()) { last = n; set(UpdateState.Downloading(r, n)) }
-                    }, onOpen = { c -> live = c; if (cancelled) c.disconnect() })
-                }
-            } catch (e: Exception) {
-                file.delete()
-                Log.warn("update download failed", e.javaClass.simpleName)
-                set(UpdateState.Failed(r, when {
-                    e is Capped.TooBig -> "The download is bigger than the release says."
-                    e is Stopped || cancelled -> "The download took too long and was stopped. Try again."
-                    else -> "The download failed (${e.javaClass.simpleName}). Try again."
-                }))
-                return
-            } finally { live = null }
+            cancelled = false
+            val started = System.currentTimeMillis()
+            var tries = 0
+            while (part.length() < r.size) {
+                val at = part.length()
+                try {
+                    var last = at
+                    java.io.FileOutputStream(part, at > 0).use { out ->
+                        RelayClient.appFile(p, Capped(out, r.size - at) { n ->
+                            if (cancelled || System.currentTimeMillis() - started > DEADLINE_MS) throw Stopped()
+                            if (at + n - last >= STEP || at + n == r.size.toLong()) { last = at + n; set(UpdateState.Downloading(r, at + n)) }
+                        }, from = at, onOpen = { c ->
+                            live = c
+                            if (cancelled) c.disconnect()
+                            // The whole file instead of the range asked: what is there is stale; start over.
+                            if (at > 0 && c.responseCode != 206) throw Restart()
+                        })
+                    }
+                } catch (e: Exception) {
+                    live = null
+                    val fatal = e is Capped.TooBig || e is Stopped || cancelled || e is RelayClient.Failed || ++tries > TRIES
+                    if (e is Restart) { part.delete(); continue }
+                    if (!fatal) { Log.warn("update download retried", e.javaClass.simpleName); Thread.sleep(RETRY_MS); continue }
+                    if (e is Capped.TooBig) part.delete()
+                    Log.warn("update download failed", e.javaClass.simpleName)
+                    set(UpdateState.Failed(r, when {
+                        e is Capped.TooBig -> "The download is bigger than the release says."
+                        e is Stopped || cancelled -> "The download took too long and was stopped. Try again: it goes on from where it stopped."
+                        e is RelayClient.Failed -> "The relay refused the download (${e.status}). Try again later."
+                        else -> "The download kept failing (${e.javaClass.simpleName}). Try again: it goes on from where it stopped."
+                    }))
+                    return
+                } finally { live = null }
+            }
+            if (!part.renameTo(file)) { part.delete(); return set(UpdateState.Failed(r, "The downloaded file couldn't be kept.")) }
             val why = runCatching { UpdateRules.verified(r, archive(app), file.length(), sha256(file), read(app, file)) }
                 .getOrElse { "The download couldn't be checked (${it.javaClass.simpleName})." }
             if (why != null) {
@@ -361,6 +380,11 @@ object Update {
 
     /** The download was cancelled or ran past its deadline. */
     private class Stopped : IOException("stopped")
+    /** The relay sent the whole file where a range was asked: the part file is dropped and the download starts over. */
+    private class Restart : IOException("restart")
+    /** How many broken transfers in a row are retried, and the pause between. */
+    private const val TRIES = 12
+    private const val RETRY_MS = 3_000L
 
     /** Writes through up to [max] bytes and refuses the next: a body longer than the release says stops at once. */
     private class Capped(private val out: OutputStream, private val max: Long, private val onCount: (Long) -> Unit = {}) : OutputStream() {
