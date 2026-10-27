@@ -111,6 +111,12 @@ object UpdateRules {
     }
 
     fun sha256Hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+
+    /**
+     * The count of passes that brought nothing, after a pass that went from [before] to [after] bytes: bytes kept
+     * reset it, however the pass ended (Codex, 2026-10-27: a transfer cut at 300 s still brings its bytes).
+     */
+    fun triesAfter(tries: Int, before: Long, after: Long): Int = if (after > before) 0 else tries
 }
 
 /**
@@ -243,7 +249,6 @@ object Update {
                             if (at > 0 && c.responseCode != 206) throw Restart()
                         })
                     }
-                    if (part.length() > at) tries = 0   // bytes came: the count is for passes that bring nothing
                 } catch (e: Exception) {
                     when {
                         e is Capped.TooBig -> { part.delete(); return stop(e, "The download is bigger than the release says.") }
@@ -255,7 +260,10 @@ object Update {
                     }
                     Log.warn("update download retried", e.javaClass.simpleName)
                     Thread.sleep(RETRY_MS)
-                } finally { live = null }
+                } finally {
+                    live = null
+                    tries = UpdateRules.triesAfter(tries, at, part.length())   // bytes kept reset the count, however the pass ended
+                }
             }
             if (!part.renameTo(file)) { part.delete(); return set(UpdateState.Failed(r, "The downloaded file couldn't be kept.")) }
             val why = runCatching { UpdateRules.verified(r, archive(app), file.length(), sha256(file), read(app, file)) }

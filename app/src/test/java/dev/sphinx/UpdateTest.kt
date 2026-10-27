@@ -92,4 +92,17 @@ class UpdateTest {
     @Test fun sha256HexIsLowercase() {
         assertEquals("00ff10", UpdateRules.sha256Hex(byteArrayOf(0, -1, 16)))
     }
+
+    @Test fun passesThatBringBytesNeverExhaustTheRetries() {
+        // Twenty transfers each cut after some bytes (the proxy's 300 s): the count never climbs.
+        var tries = 0
+        var have = 0L
+        repeat(20) { tries += 1; val before = have; have += 100; tries = UpdateRules.triesAfter(tries, before, have) }
+        assertEquals(0, tries)
+        // Passes that bring nothing (a restart, a refused range, a dead connection) do.
+        repeat(5) { tries += 1; tries = UpdateRules.triesAfter(tries, have, have) }
+        assertEquals(5, tries)
+        // A part file dropped (a restart) is no progress either.
+        assertEquals(5, UpdateRules.triesAfter(5, 300L, 0L))
+    }
 }
