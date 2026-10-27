@@ -479,6 +479,8 @@ async function content(m, s) {
       return { ok: true };
     }
     case "ask": {
+      // The trace: how long the page script had the field before it asked (a number from the page, bounded).
+      if (Number.isFinite(m.seen)) T("field seen", `${Math.max(0, Math.min(600000, Math.round(Date.now() - m.seen)))} ms before this ask`);
       const e = await eligible(s);
       if (!e) return { ok: false, why: "not a saved site" };
       let user = typeof m.user === "string" ? m.user.slice(0, 120) : "";

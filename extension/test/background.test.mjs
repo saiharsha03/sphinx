@@ -472,7 +472,7 @@ test("replies that arrive out of order are both taken, each once", async () => {
 // 2026-10-27: the timing trace and the keepalive, after a night of 20-80 s waits nobody could place.
 test("the trace shows every hop by its shape: never a code, an account, a laptop name or a user name", async () => {
   store.pairing = { ...pairing(), name: "the owners laptop" };
-  const r = await ask({ t: "ask", user: "alice@example.com" }, page("doc-TR1"));
+  const r = await ask({ t: "ask", user: "alice@example.com", seen: Date.now() - 1234 }, page("doc-TR1"));
   replyBlob = await phoneReply(r.rid, { ok: true, code: "918273", account: "alice@example.com" }, 50);
   assert.equal((await ask({ t: "wait", rid: r.rid }, page("doc-TR1"))).code, "918273");
   await ask({ t: "remember", user: "alice@example.com" }, page("doc-TR1"));
@@ -481,6 +481,7 @@ test("the trace shows every hop by its shape: never a code, an account, a laptop
   assert.match(lines, /send posted code.request/);
   assert.match(lines, /answer wait \{"ok":true,"done":true,"code":"6 digits","account":"named"\}/);
   assert.match(lines, /worker start/);
+  assert.match(lines, /field seen 12\d\d ms before this ask/);
   for (const secret of ["918273", "alice", "the owners", store.pairing.l2p, store.pairing.p2l]) assert.doesNotMatch(lines, new RegExp(secret));
   assert.equal(shape({ ok: true, qr: "sphinx:1?...", rid: "ABCDEFGHIJKLMNOPQRSTUV", items: [1, 2] }), '{"ok":true,"rid":"ABCDEF","items":2}');
   const t = await ask({ t: "trace" }, optionsPage);

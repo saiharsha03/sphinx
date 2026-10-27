@@ -139,7 +139,8 @@
     // The code page often doesn't show who is signing in (GitHub's doesn't): fall back to the user name he typed on this
     // site's sign-in page in this tab, so the phone picks between his two accounts itself (owner, 2026-10-23).
     const user = D.userHint([...document.querySelectorAll("input")].map(desc), document.body?.innerText || "") || remembered();
-    const r = await send({ t: "ask", user });
+    // When the field was first seen, for the worker's timing trace (the gap from seen to asked).
+    const r = await send({ t: "ask", user, seen: seenAt });
     if (!r?.ok) return "error";
     if (r.code) return done(target, at, { code: r.code, account: r.account });
     say(at, "Sphinx: answer on your phone", true);
@@ -158,9 +159,11 @@
     return "no answer";
   }
 
+  let seenAt = 0;
   async function scan() {
     const target = find();
     if (!target) return;
+    if (!seenAt) seenAt = Date.now();
     if (eligible === null) eligible = !!(await send({ t: "eligible" }))?.ok;
     if (!eligible) return;
     // A click asks again whenever none is in flight (shouldAsk), after a fill too (the site may turn a code down); armed once per field element.
@@ -212,10 +215,14 @@
   page();
   document.addEventListener("visibilitychange", page);
 
-  let timer;
+  let timer, frame = 0;
   const later = () => { clearTimeout(timer); timer = setTimeout(() => { page(); scan(); }, 400); };
+  // The first look for a code field runs on the very change that drew it, one look per frame, until this page has
+  // asked (owner, 2026-10-27: the 400 ms quiet wait showed as lag before the code went in). The quiet wait stays for
+  // arming fields drawn later.
+  const soon = () => { if (frame || auto.has(location.href) || busy) return; frame = requestAnimationFrame(() => { frame = 0; scan(); }); };
   later();
   // The page check runs on every change, not only after the page goes quiet: a busy page (AWS redraws for seconds) kept
   // pushing the debounced one back (2026-10-27, measured ~6 s). ready() is a no-op once readied, so this is cheap.
-  new MutationObserver(() => { if (!readied) page(); later(); }).observe(document.documentElement, { childList: true, subtree: true });
+  new MutationObserver(() => { if (!readied) page(); soon(); later(); }).observe(document.documentElement, { childList: true, subtree: true });
 })();
