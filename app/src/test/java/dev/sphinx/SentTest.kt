@@ -12,6 +12,10 @@ class SentTest {
     @Test fun newestFirstAndTheOldestDroppedPast200() {
         var all = emptyList<SentItem>()
         for (n in 1..230) all = SentRules.add(all, item(n))
+        // And a byte cap: long texts drop the oldest well before 200.
+        var big = emptyList<SentItem>()
+        for (n in 1..60) big = SentRules.add(big, SentItem(id = "b$n", at = n.toLong(), laptop = "L", kind = SentKind.TEXT, text = "x".repeat(3000)))
+        assertTrue(big.size < 60 && big.sumOf(SentRules::bytes) <= SentRules.MAX_BYTES && big.first().id == "b60")
         assertEquals(200, all.size)
         assertEquals("i230", all.first().id)
         assertEquals("i31", all.last().id)

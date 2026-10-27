@@ -74,9 +74,12 @@ object Handoff {
         }
     }
 
-    private fun keep(c: Context, item: SentItem) =
-        runCatching { SphinxStore.get(c).addSent(item.copy(id = SphinxCrypto.newId(12), at = System.currentTimeMillis())) }
-            .onFailure { e -> Log.warn("handoff not kept", e.javaClass.simpleName) }
+    /** Kept on its own thread: the wake that brought it may carry a code request behind it (Fable, 2026-10-27). */
+    private fun keep(c: Context, item: SentItem) {
+        val app = c.applicationContext
+        val it = item.copy(id = SphinxCrypto.newId(12), at = System.currentTimeMillis())
+        Thread { runCatching { SentStore.add(app, it) }.onFailure { e -> Log.warn("handoff not kept", e.javaClass.simpleName) } }.start()
+    }
 
     private fun saveFile(c: Context, p: Pairing, rid: String, f: FileRef) {
         val data = HandoffRules.assemble(f, (0 until f.chunks).map { RelayClient.getChunk(p, f.fid, it) }) ?: run { Log.warn("handoff file refused"); return }

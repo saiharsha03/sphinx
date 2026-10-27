@@ -66,6 +66,19 @@ def test_a_bad_release_is_no_release(relay, tmp_path, caplog):
         assert call(c, "GET", "/v1/app/file").status_code == 404, meta
     (tmp_path / "app.json").write_text("{not json")
     assert call(c, "GET", "/v1/app").status_code == 404
+    # A symlink in place of the APK is no release, wherever it points.
+    write_release(tmp_path, apk=None)
+    (tmp_path / META["file"]).unlink(missing_ok=True)
+    (tmp_path / "real.bin").write_bytes(APK)
+    try:
+        (tmp_path / META["file"]).symlink_to(tmp_path / "real.bin")
+    except OSError:
+        pass   # no symlink rights here: the rule is still exercised on Linux
+    else:
+        assert call(c, "GET", "/v1/app").status_code == 404
+        (tmp_path / META["file"]).unlink()
+    (tmp_path / "real.bin").unlink()
+    (tmp_path / META["file"]).write_bytes(APK)   # back to a plain file for the step below
     write_release(tmp_path, apk=None)
     (tmp_path / META["file"]).unlink()
     assert call(c, "GET", "/v1/app").status_code == 404                       # the named APK is missing

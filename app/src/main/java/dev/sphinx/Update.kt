@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.updateAndGet
 import java.io.File
 import java.io.IOException
 import java.io.OutputStream
@@ -127,10 +128,10 @@ object Update {
             break
         }
         val own = own(app)
-        val next = UpdateRules.afterCheck(_state.value, found, own)
-        _state.value = next
+        // Atomic: a check landing mid-download must not turn Downloading back into Available (Fable, 2026-10-27).
+        val next = _state.updateAndGet { UpdateRules.afterCheck(it, found, own) }
         if (next is UpdateState.Available) {
-            Log.info("update available", next.release.versionName)
+            Log.info("update available", next.release.versionCode.toString())
             notify(app, next.release)
         }
     }
@@ -165,6 +166,14 @@ object Update {
      * no file behind and says why ([UpdateState.Failed]). Blocking, never on the main thread.
      */
     fun install(c: Context, r: AppRelease, onState: (UpdateState) -> Unit = {}) {
+        // One at a time: a second tap mid-download would wipe the folder under the first (Codex, 2026-10-27).
+        if (!installing.compareAndSet(false, true)) return
+        try { installNow(c, r, onState) } finally { installing.set(false) }
+    }
+
+    private val installing = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun installNow(c: Context, r: AppRelease, onState: (UpdateState) -> Unit) {
         val app = c.applicationContext
         fun set(s: UpdateState) { _state.value = s; onState(s) }
         // Asked before the download, not after it: the setting is one tap away and the APK may be large.
@@ -197,7 +206,7 @@ object Update {
             return
         }
         set(UpdateState.Ready(r, file.path))
-        Log.info("update ready", r.versionName)
+        Log.info("update ready", r.versionCode.toString())
         val uri = FileProvider.getUriForFile(app, "${app.packageName}.files", file)
         val i = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)

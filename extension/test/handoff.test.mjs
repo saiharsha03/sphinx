@@ -147,6 +147,10 @@ test("a received file downloads only through the popup, and must match its hash"
   assert.equal(it.file.name, "note.txt");
   const r = await ask({ t: "file", id: it.id }, POPUP);
   assert.equal(atob(r.data), "from the phone");
+  // Not marked and still on the relay until the popup says the download started.
+  assert.ok(!calls.some(([m, p]) => m === "DELETE" && p === `/v1/files/${fid}`));
+  assert.notEqual(store.inbox.find((x) => x.id === it.id).saved, true);
+  assert.equal((await ask({ t: "saved", id: it.id }, POPUP)).ok, true);
   assert.ok(calls.some(([m, p]) => m === "DELETE" && p === `/v1/files/${fid}`));
   assert.equal(store.inbox.find((x) => x.id === it.id).saved, true);   // kept, marked
 });

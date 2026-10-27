@@ -533,6 +533,9 @@ def app_release(folder: str | None) -> tuple[AppRelease, str] | None:
         with open(os.path.join(folder, "app.json"), encoding="utf-8") as f:
             rel = AppRelease.model_validate_json(f.read())
         path = os.path.join(folder, rel.file)
+        # A plain file inside the folder: a symlink could point anywhere on the VPS (Codex, 2026-10-27).
+        if os.path.islink(path) or os.path.dirname(os.path.realpath(path)) != os.path.realpath(folder):
+            raise FileNotFoundError("the named APK, a plain file in the release folder")
         if not os.path.isfile(path) or os.path.getsize(path) != rel.size:
             raise FileNotFoundError("the named APK, at the stated size")
     except (OSError, ValueError) as e:

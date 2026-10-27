@@ -120,8 +120,8 @@ class KeystoreBoxKeys(private val alias: String) : BoxKeys {
  * laptop's request can be matched in the background. Only ciphertext is stored; the prefs are excluded from backup.
  * Call on IO.
  */
-class SealedPrefs(context: Context) {
-    private val sp = context.getSharedPreferences("sphinx", Context.MODE_PRIVATE)
+class SealedPrefs(context: Context, file: String = "sphinx", private val alias: String = ALIAS, private val strongBox: Boolean = true) {
+    private val sp = context.getSharedPreferences(file, Context.MODE_PRIVATE)
 
     fun read(slot: String): String? {
         val ct = sp.getString("$slot.ct", null) ?: return null
@@ -141,26 +141,27 @@ class SealedPrefs(context: Context) {
         sp.edit().putString("$slot.ct", Base64.encodeToString(ct, Base64.NO_WRAP)).putString("$slot.iv", Base64.encodeToString(c.iv, Base64.NO_WRAP)).commit()
     }
 
-    private companion object {
-        const val ALIAS = "sphinx.prefs"
-
-        /** Made on first use (StrongBox when the phone has it). */
-        fun key(): SecretKey {
-            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-            (ks.getKey(ALIAS, null) as? SecretKey)?.let { return it }
-            fun make(strongBox: Boolean): SecretKey = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
-                init(
-                    KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                        .setKeySize(256)
-                        .setIsStrongBoxBacked(strongBox)
-                        .build(),
-                )
-            }.generateKey()
-            return try { make(true) } catch (_: Exception) { make(false) }
-        }
+    /**
+     * Made on first use: StrongBox when the phone has it and [strongBox] asks for it (the secrets), else the TEE (the
+     * sent list: StrongBox runs at tens of KB/s, and a laptop's handoff must not hold a code request behind it).
+     */
+    private fun key(): SecretKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (ks.getKey(alias, null) as? SecretKey)?.let { return it }
+        fun make(strongBox: Boolean): SecretKey = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
+            init(
+                KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setKeySize(256)
+                    .setIsStrongBoxBacked(strongBox)
+                    .build(),
+            )
+        }.generateKey()
+        return if (strongBox) try { make(true) } catch (_: Exception) { make(false) } else make(false)
     }
+
+    private companion object { const val ALIAS = "sphinx.prefs" }
 }
 
 /**

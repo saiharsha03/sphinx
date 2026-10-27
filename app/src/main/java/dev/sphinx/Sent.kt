@@ -1,5 +1,7 @@
 package dev.sphinx
 
+import com.fasterxml.jackson.core.type.TypeReference
+import android.content.Context
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -26,11 +28,45 @@ data class SentItem(
 )
 
 /** The pure rules of the sent list: newest first, at most [MAX] kept, cleared by tab. */
+/** Bumped on every change to the list, so the tabs reload without a round trip through the screen (Codex, 2026-10-27). */
+object SentFeed {
+    val version = kotlinx.coroutines.flow.MutableStateFlow(0L)
+    fun bump() { version.value = version.value + 1 }
+}
+
+/**
+ * Where the list lives: its own sealed prefs under a TEE key, apart from the secrets' StrongBox store and its lock, so a
+ * laptop's handoff never holds a code request behind a slow seal (Fable, 2026-10-27). Blocking: call off the main thread.
+ */
+object SentStore {
+    private const val SLOT = "sent"
+    private val lock = Any()
+    private fun prefs(c: Context) = SealedPrefs(c.applicationContext, "sphinx_sent", "sphinx.sent", strongBox = false)
+
+    fun sent(c: Context): List<SentItem> = prefs(c).read(SLOT)?.let { runCatching { json.readValue(it, object : TypeReference<List<SentItem>>() {}) }.getOrNull() }.orEmpty()
+
+    private fun save(c: Context, l: List<SentItem>) = prefs(c).write(SLOT, if (l.isEmpty()) null else json.writeValueAsString(l))
+
+    fun add(c: Context, item: SentItem) { synchronized(lock) { save(c, SentRules.add(sent(c), item)) }; SentFeed.bump() }
+    fun remove(c: Context, id: String) { synchronized(lock) { save(c, SentRules.remove(sent(c), id)) }; SentFeed.bump() }
+    fun clear(c: Context, kinds: Set<SentKind>) { synchronized(lock) { save(c, SentRules.clear(sent(c), kinds)) }; SentFeed.bump() }
+}
+
 object SentRules {
     const val MAX = 200
+    /** The list's rough size cap, so a read stays a few milliseconds: texts are up to 3000 bytes, urls 2048. */
+    const val MAX_BYTES = 64 * 1024
 
-    /** [item] in front of [all], the oldest beyond [MAX] dropped. */
-    fun add(all: List<SentItem>, item: SentItem): List<SentItem> = (listOf(item) + all.filter { it.id != item.id }).sortedByDescending { it.at }.take(MAX)
+    /** What [it] costs in the sealed list, about: its strings and the fixed fields. */
+    fun bytes(it: SentItem): Int = (it.text?.length ?: 0) + (it.url?.length ?: 0) + (it.name?.length ?: 0) + (it.uri?.length ?: 0) + it.laptop.length + 120
+
+    /** [item] in front of [all], the oldest beyond [MAX] items or [MAX_BYTES] dropped. */
+    fun add(all: List<SentItem>, item: SentItem): List<SentItem> {
+        val kept = (listOf(item) + all.filter { it.id != item.id }).sortedByDescending { it.at }.take(MAX).toMutableList()
+        var total = kept.sumOf(::bytes)
+        while (kept.size > 1 && total > MAX_BYTES) total -= bytes(kept.removeAt(kept.size - 1))
+        return kept
+    }
 
     fun remove(all: List<SentItem>, id: String): List<SentItem> = all.filter { it.id != id }
 

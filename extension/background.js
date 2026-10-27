@@ -664,8 +664,16 @@ async function setInbox(list) {
   await put("inbox", kept);
   try { await chrome.action.setBadgeText({ text: kept.length ? String(kept.length) : "" }); await chrome.action.setBadgeBackgroundColor({ color: "#7fd6aa" }); } catch { /* tests */ }
 }
+// Every change to the list goes through one chain of its own (Codex, 2026-10-27: a new item vanished when a mark
+// overlapped a poll), not `locked`, which the code path's seals share (Fable: a slow list write must not hold a code).
+let inboxChain = Promise.resolve();
+function editInbox(f) {
+  const run = inboxChain.then(async () => setInbox(f(await inbox())));
+  inboxChain = run.catch(() => {});
+  return run;
+}
 /** One item changed in place (a file's state), by id. */
-const markInbox = async (id, change) => setInbox((await inbox()).map((x) => (x.id === id ? { ...x, ...change } : x)));
+const markInbox = (id, change) => editInbox((list) => list.map((x) => (x.id === id ? { ...x, ...change } : x)));
 
 /**
  * Phone to laptop: the laptop's outbox on the relay, opened with the phone-push direction 'p' and its own counter
@@ -697,7 +705,7 @@ async function pollOutbox() {
   });
   await relay(p, "POST", "/outbox/ack", { rids: items.map((b) => b.rid).filter((x) => typeof x === "string") }).catch(() => {});
   if (got.length) {
-    await setInbox([...got.reverse(), ...(await inbox())]);
+    await editInbox((list) => [...got.reverse(), ...list]);
     for (const it of got) {
       try { chrome.notifications.create(`sphinx:${it.id}`, { type: "basic", iconUrl: "icons/icon128.png", title: "From your phone", message: `${label(it)}. Click to see it in Sphinx.` }); } catch { /* none */ }
     }
@@ -723,7 +731,8 @@ async function fetchFile(f) {
     out.set(part, n * CHUNK);
   }
   if ((await sha256Hex(out)) !== f.sha256) throw new Error("the file doesn't match what the phone sent");
-  await relay(p, "DELETE", `/files/${f.fid}`).catch(() => {});
+  // The relay's copy stays until the popup says the download started ("saved"): a popup closed in between, or a
+  // download Chrome refused, would otherwise lose the file (Codex, 2026-10-27). The relay drops it after 10 min anyway.
   return out;
 }
 
@@ -738,14 +747,14 @@ async function popup(m) {
       return { ok: true, paired: !!(await get("pairing")), items: await inbox() };
     }
     case "dismiss": {
-      await setInbox((await inbox()).filter((x) => x.id !== m.id));
+      await editInbox((list) => list.filter((x) => x.id !== m.id));
       return { ok: true };
     }
     case "clear": {
       // One section at a time: "texts" is texts and links, "files" the files.
       const files = m.section === "files";
       if (!files && m.section !== "texts") return { ok: false, why: "unknown section" };
-      await setInbox((await inbox()).filter((x) => (x.type === "file") !== files));
+      await editInbox((list) => list.filter((x) => (x.type === "file") !== files));
       return { ok: true };
     }
     case "openLink": {
@@ -766,8 +775,16 @@ async function popup(m) {
         await markInbox(m.id, { gone: true });
         return { ok: false, why: "no longer on the relay", gone: true };
       }
-      await markInbox(m.id, { saved: true });
       return { ok: true, name: it.file.name, mime: it.file.mime, data: b64std(data) };
+    }
+    case "saved": {
+      // Chrome took the download: the item is marked and the relay's copy goes.
+      const it = (await inbox()).find((x) => x.id === m.id && x.type === "file");
+      if (!it) return { ok: false, why: "no such file" };
+      await markInbox(m.id, { saved: true });
+      const p = await get("pairing");
+      if (p) await relay(p, "DELETE", `/files/${it.file.fid}`).catch(() => {});
+      return { ok: true };
     }
     case "sendLink": return handoff({ type: "link", url: m.url, open: m.open === true });
     case "sendText": return handoff({ type: "text", text: m.text });

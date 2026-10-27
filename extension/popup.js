@@ -32,7 +32,10 @@ function row(it) {
       if (!f?.ok) { if (f?.gone) render(); else e.target.textContent = f?.why || "Failed"; return; }
       const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
       const url = URL.createObjectURL(new Blob([bytes], { type: f.mime }));
-      await chrome.downloads.download({ url, filename: f.name, saveAs: false, conflictAction: "uniquify" });
+      try {
+        await chrome.downloads.download({ url, filename: f.name, saveAs: false, conflictAction: "uniquify" });
+        await send({ t: "saved", id: it.id });
+      } catch { e.target.textContent = "Download refused"; e.target.disabled = false; }
       setTimeout(() => URL.revokeObjectURL(url), 60000);
       render();
     }));

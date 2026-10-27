@@ -186,11 +186,12 @@ fun SphinxScreen(first: Tab = Tab.ACCOUNTS) {
     }
     // An import left half done (back, a lock, the screen going) wipes the secrets it held.
     DisposableEffect(Unit) { onDispose { view.picking?.found?.forEach { it.secret.fill(0) } } }
-    LaunchedEffect(unlocked, bump) {
+    val sentVersion by SentFeed.version.collectAsState()
+    LaunchedEffect(unlocked, bump, sentVersion) {
         if (!unlocked) return@LaunchedEffect
         val s = SphinxStore.get(app)
         val (a, p) = withContext(Dispatchers.IO) { s.accounts() to s.pairings() }
-        val (t, sent) = withContext(Dispatchers.IO) { s.textSites() to s.sent() }
+        val (t, sent) = withContext(Dispatchers.IO) { s.textSites() to SentStore.sent(app) }
         val watcher = Settings.Secure.getString(app.contentResolver, "enabled_notification_listeners")?.contains(app.packageName) == true
         val g = withContext(Dispatchers.IO) { runCatching { Backups.waiting(app) }.getOrNull() }
         val stuck = withContext(Dispatchers.IO) { runCatching { Backups.local(app).retirePending() }.getOrDefault(false) }
@@ -281,8 +282,8 @@ fun SphinxScreen(first: Tab = Tab.ACCOUNTS) {
             }
         },
         unpair = { p -> scope.launch { withContext(Dispatchers.IO) { Sphinx.unpair(app, p.pid) }; bump++ } },
-        removeSent = { id -> scope.launch { withContext(Dispatchers.IO) { SphinxStore.get(app).removeSent(id) }; bump++ } },
-        clearSent = { kind -> scope.launch { withContext(Dispatchers.IO) { SphinxStore.get(app).clearSent(SentRules.tabOf(kind)) }; bump++ } },
+        removeSent = { id -> scope.launch { withContext(Dispatchers.IO) { SentStore.remove(app, id) }; bump++ } },
+        clearSent = { kind -> scope.launch { withContext(Dispatchers.IO) { SentStore.clear(app, SentRules.tabOf(kind)) }; bump++ } },
         openFullScreen = { settings(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT) },
         openOverApps = { settings(Settings.ACTION_MANAGE_OVERLAY_PERMISSION) },
         openWatcher = { runCatching { ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } },
