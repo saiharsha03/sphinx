@@ -308,6 +308,11 @@ fun SphinxScreen(first: Tab = Tab.ACCOUNTS) {
 
 
     SphinxFrame(view, calls, unlocked, failure, ::unlock)
+    // A newer Sphinx on the relay: a popup over the unlocked home, besides the row in Settings.
+    if (unlocked) {
+        val update by Update.state.collectAsState()
+        UpdateDialog(update, onUpdate = { Update.installInBackground(app, it) })
+    }
 }
 
 /**

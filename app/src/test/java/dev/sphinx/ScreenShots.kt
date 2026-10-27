@@ -1,5 +1,13 @@
 package dev.sphinx
 
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import androidx.activity.ComponentActivity
@@ -95,6 +103,17 @@ class ScreenShots {
 
     @Test @Config(sdk = [35], qualifiers = "w393dp-h852dp-xhdpi")
     fun files() = shot("files") { SphinxFrame(home(Tab.FILES), Calls(samples = samples), true, null) {} }
+
+    @Test
+    fun update() = shot("update") {
+        val r = AppRelease(7L, "1.3.1", "a".repeat(64), 31_031_325, "sphinx-1.3.1.apk", "Texts and Files tabs, the built-in updater")
+        Box {
+            SphinxFrame(home(Tab.ACCOUNTS), Calls(samples = samples), true, null) {}
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)).padding(28.dp), contentAlignment = Alignment.Center) {
+                UpdateCard(UpdateState.Available(r), r, onLater = {}, onUpdate = {})
+            }
+        }
+    }
 
     @Test @Config(sdk = [35], qualifiers = "w393dp-h852dp-xhdpi")
     fun approve() = shot("approve") {

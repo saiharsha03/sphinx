@@ -8,7 +8,26 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -248,6 +267,56 @@ object Update {
         override fun write(b: ByteArray, off: Int, len: Int) { n += len; if (n > max) throw TooBig(); out.write(b, off, len) }
         override fun flush() = out.flush()
         override fun close() = out.close()
+    }
+}
+
+/**
+ * The popup over the home screen when the relay holds a newer Sphinx (the owner, 2026-10-27: not hidden away in Settings).
+ * "Later" puts it away for that release until the app is next opened; it follows the download and the install the
+ * same way the Settings row does, so a tap on Update needs no trip to Settings. Nothing here fetches: [state] is
+ * whatever the last check found.
+ */
+@Composable
+fun UpdateDialog(state: UpdateState, onUpdate: (AppRelease) -> Unit) {
+    val release = when (state) {
+        is UpdateState.Available -> state.release
+        is UpdateState.Downloading -> state.release
+        is UpdateState.Ready -> state.release
+        is UpdateState.Failed -> state.release
+        UpdateState.None -> null
+    } ?: return
+    var dismissed by rememberSaveable { mutableLongStateOf(0L) }
+    if (dismissed == release.versionCode) return
+    // Busy only while the bytes come: once Android's installer is up, a cancelled install must leave the card
+    // dismissable (Codex, 2026-10-27: nothing clears Ready, and the installer returns without an ON_START).
+    val busy = state is UpdateState.Downloading
+    Dialog(onDismissRequest = { if (!busy) dismissed = release.versionCode }, properties = DialogProperties(dismissOnBackPress = !busy, dismissOnClickOutside = !busy)) {
+        UpdateCard(state, release, onLater = { dismissed = release.versionCode }, onUpdate = onUpdate)
+    }
+}
+
+/** What the popup shows: the release, where the update stands, Later and Update. */
+@Composable
+fun UpdateCard(state: UpdateState, release: AppRelease, onLater: () -> Unit, onUpdate: (AppRelease) -> Unit) {
+    val busy = state is UpdateState.Downloading
+    Group {
+        // The notes scroll past a height, so Later and Update stay in view (Codex, 2026-10-27: notes run to 2000 chars).
+        Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Kicker("Update")
+            Text("Sphinx ${release.versionName} is ready", style = Type.bodyLg.copy(fontWeight = FontWeight.SemiBold), color = Sx.p.text)
+            release.notes?.takeIf { it.isNotBlank() }?.let { Text(it, style = Type.bodySm, color = Sx.p.text2) }
+            when (state) {
+                is UpdateState.Downloading -> Text("Downloading…", style = Type.bodySm, color = Sx.p.text2)
+                is UpdateState.Ready -> Text("Android is asking to install it. If you cancelled, tap Update again.", style = Type.bodySm, color = Sx.p.text2)
+                is UpdateState.Failed -> Text(state.why, style = Type.bodySm, color = Sx.p.danger)
+                else -> {}
+            }
+        }
+        Hairline()
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+            SxButton("Later", onLater, kind = Kind.SECONDARY, enabled = !busy, small = true)
+            SxButton("Update", { onUpdate(release) }, enabled = !busy, small = true)
+        }
     }
 }
 
