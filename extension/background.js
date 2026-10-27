@@ -56,12 +56,32 @@ function locked(f) {
   return run;
 }
 
+// Chrome ends an idle extension worker after 30 s, and a relay long poll is 25 s plus the network. While any relay call
+// is in flight an extension API is called every KEEPALIVE_MS, which resets that clock (Chrome 110 and later), so a wait
+// on the phone never ends with the worker (2026-10-27: the relay saw this laptop stop polling for 11-82 s at a time).
+export const KEEPALIVE_MS = 20000;
+let inflight = 0, keep = null;
+function hold() {
+  if (++inflight !== 1) return;
+  keep = setInterval(() => { try { chrome.runtime.getPlatformInfo?.()?.catch?.(() => {}); } catch { /* none */ } }, KEEPALIVE_MS);
+  keep.unref?.();   // (node, in the tests)
+}
+function release() {
+  if (--inflight !== 0) return;
+  clearInterval(keep);
+  keep = null;
+}
+
 // One call to the pairing's relay (p.relay, an https origin; its routes are /v1/...), HMAC-signed with its relay key.
 async function relay(p, method, path, body) {
   const bytes = body ? te.encode(JSON.stringify(body)) : new Uint8Array();
   const url = new URL(`${p.relay}/v1${path}`);
   const headers = await signed(p, method, url.pathname, url.search.replace(/^\?/, ""), bytes);
-  const r = await fetch(url, { method, headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) }, body: body ? bytes : undefined, cache: "no-store", credentials: "omit", redirect: "error" });
+  hold();
+  let r;
+  try {
+    r = await fetch(url, { method, headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) }, body: body ? bytes : undefined, cache: "no-store", credentials: "omit", redirect: "error" });
+  } finally { release(); }
   if (r.status === 204) return null;
   if (!r.ok) throw new Error(`relay ${r.status}`);
   return r.json();
@@ -69,9 +89,39 @@ async function relay(p, method, path, body) {
 
 const newRid = () => b64u(crypto.getRandomValues(new Uint8Array(16)));
 
+// TIMING (2026-10-27): every hop with the time, in this worker's console and in a trace the options page shows. The trace
+// lives in storage.session (this browser session only, closed to content scripts), so it outlives a worker restart and
+// shows one ("worker start"). Never a code, a key, an account name, a laptop name or a user name: answers go in as
+// their shape (`shape`), messages as their kind and the tab's host.
+const TRACE_MAX = 300;
+let trace = [], traceFlush = null;
+const traceReady = (async () => { try { trace = ((await chrome.storage.session.get("trace")).trace || []).slice(-TRACE_MAX); } catch { trace = []; } })();
+export const T = (...a) => {
+  const line = a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ");
+  console.log(`SPHINX ${new Date().toISOString().slice(11, 23)}`, line);
+  traceReady.then(() => {
+    trace.push({ at: Date.now(), line });
+    if (trace.length > TRACE_MAX) trace.splice(0, trace.length - TRACE_MAX);
+    clearTimeout(traceFlush);
+    traceFlush = setTimeout(() => { chrome.storage.session.set({ trace }).catch(() => {}); }, 200);
+    traceFlush.unref?.();
+  });
+};
+/** An answer as the trace shows it: flags and counts only. A code, an account, a laptop name or a QR never goes in. */
+export function shape(r) {
+  if (!r || typeof r !== "object") return String(r);
+  const out = {};
+  for (const k of ["ok", "done", "why", "paired", "pending", "stale", "got", "state"]) if (k in r) out[k] = r[k];
+  if ("rid" in r) out.rid = String(r.rid).slice(0, 6);
+  if ("code" in r) out.code = `${String(r.code).length} digits`;
+  if ("account" in r) out.account = r.account ? "named" : "";
+  for (const k of ["items", "matches", "domains", "lines"]) if (Array.isArray(r[k])) out[k] = r[k].length;
+  return JSON.stringify(out);
+}
+T("worker start");
+const host = (url) => { try { return new URL(url).host; } catch { return ""; } };
+
 // One envelope out, sealed with the next counter. The counter is taken and saved under the lock.
-// TIMING (2026-10-27): every hop with the time, in this worker's console.
-export const T = (...a) => console.log(`SPHINX ${new Date().toISOString().slice(11, 23)}`, ...a);
 async function send(kind, body) {
   const rid = newRid();
   T("send start", kind, rid.slice(0, 6));
@@ -510,6 +560,8 @@ async function options(m) {
     }
     case "refresh": return refreshDomains();
     case "granted": return { ok: true, matches: await register() };
+    case "trace": { await traceReady; return { ok: true, lines: trace.map((e) => ({ at: e.at, line: e.line })) }; }
+    case "traceClear": { await traceReady; trace.length = 0; await chrome.storage.session.set({ trace: [] }).catch(() => {}); return { ok: true }; }
     case "unpair": {
       await locked(() => drop(["pairing", "offer", "domains"]));
       waiting.clear();
@@ -529,9 +581,9 @@ async function options(m) {
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
   // Only this extension's own scripts can reach here (no externally_connectable); still, each side gets its own set.
   if (sender.id !== chrome.runtime.id || !m || typeof m !== "object" || typeof m.t !== "string") return false;
-  T("message", m.t, sender.tab?.url ? new URL(sender.tab.url).host : "");
+  T("message", m.t, host(sender.tab?.url));
   const run = fromOptions(sender) ? options(m) : fromPopup(sender) ? popup(m) : fromContent(sender) ? content(m, sender) : Promise.resolve({ ok: false, why: "unknown sender" });
-  run.then((r) => { T("answer", m.t, JSON.stringify(r)?.slice(0, 80)); reply(r); }, (e) => { T("error", m.t, String(e?.message || e)); reply({ ok: false, why: String(e?.message || e).slice(0, 80) }); });
+  run.then((r) => { T("answer", m.t, shape(r)); reply(r); }, (e) => { T("error", m.t, String(e?.message || e)); reply({ ok: false, why: String(e?.message || e).slice(0, 80) }); });
   return true;
 });
 
@@ -563,7 +615,12 @@ chrome.permissions.onRemoved.addListener(() => { register().catch((e) => console
 heal();   // every wake of the worker
 // A tab that loads a new page loses its green (a saved site's content script says so again), but keeps blinking while a
 // request it sent still waits (a password form's submit navigates); a closed one is forgotten.
-chrome.tabs?.onUpdated?.addListener((id, info) => { if (info.status === "loading") heal(); const t = tabs.get(id); if (info.status === "loading" && t) { t.siteSaved = false; t.filled = false; paint(id); } });
+chrome.tabs?.onUpdated?.addListener((id, info, tab) => {
+  if (info.status) T("tab", info.status, host(tab?.url));   // when the page started and finished loading, against the hops after it
+  if (info.status === "loading") heal();
+  const t = tabs.get(id);
+  if (info.status === "loading" && t) { t.siteSaved = false; t.filled = false; paint(id); }
+});
 chrome.tabs?.onRemoved?.addListener((id) => { tabs.delete(id); });
 
 // ---- handoff: links, text and small files between the phone and this laptop (docs/DESIGN.md, "Handoff") ----
@@ -730,4 +787,4 @@ chrome.contextMenus?.onClicked?.addListener((info) => { menuClicked(info).catch(
 chrome.notifications?.onClicked?.addListener((id) => { if (id.startsWith("sphinx:")) chrome.tabs.create({ url: chrome.runtime.getURL("popup.html") }); });
 
 // For the tests.
-export const _test = { popup, pollOutbox, menuClicked, sendFile, fetchFile, inbox, alarm, held, register, waiting, locked, send, ready, options, trusted, phoneStatus, paint, tabs };
+export const _test = { popup, pollOutbox, menuClicked, sendFile, fetchFile, inbox, alarm, held, register, waiting, locked, send, ready, options, trusted, phoneStatus, paint, tabs, trace: () => trace };

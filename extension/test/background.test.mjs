@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
@@ -35,13 +35,14 @@ globalThis.chrome = {
     setIcon: async () => { throw new Error("no OffscreenCanvas in node"); }, onClicked: { addListener() {} },
   },
 };
-let pslFails = 0, hello = null, helloGate = null;
+let pslFails = 0, hello = null, helloGate = null, fetchGate = null;
 globalThis.fetch = async (url, init = {}) => {
   if (String(url).startsWith("chrome-extension://")) {
     if (pslFails > 0) { pslFails--; throw new Error("not yet"); }
     return { text: async () => PSL };
   }
   calls.push([String(url), init.method, init.body]);
+  if (fetchGate) await fetchGate;   // a slow relay (a long poll), held until a test lets it go
   if (String(url).endsWith("/v1/hello")) {
     if (helloGate) await helloGate;
     return { status: 200, ok: true, json: async () => ({ hello }) };
@@ -57,7 +58,7 @@ globalThis.fetch = async (url, init = {}) => {
   }
   return { status: 200, ok: true, json: async () => ({ queued: true }) };
 };
-const { _test, canonical, phoneState, dotState, heldCodes, heldNow, heldFor, offerFresh, windowFresh, windowAfter } = await import("../background.js");
+const { _test, canonical, phoneState, dotState, heldCodes, heldNow, heldFor, offerFresh, windowFresh, windowAfter, shape, KEEPALIVE_MS } = await import("../background.js");
 const { b64u, hkdf, hmac, open, seal, unb64u } = await import("../crypto.js");
 
 const ask = (m, sender) => new Promise((ok) => { listener(m, sender, ok) || ok(undefined); });
@@ -466,4 +467,46 @@ test("replies that arrive out of order are both taken, each once", async () => {
   assert.equal(windowFresh(3, 5, [4]), false);
   assert.equal(windowFresh(1, 2), false);
   assert.equal(windowAfter(100, 2).gaps.length, 31);
+});
+
+// 2026-10-27: the timing trace and the keepalive, after a night of 20-80 s waits nobody could place.
+test("the trace shows every hop by its shape: never a code, an account, a laptop name or a user name", async () => {
+  store.pairing = { ...pairing(), name: "the owners laptop" };
+  const r = await ask({ t: "ask", user: "alice@example.com" }, page("doc-TR1"));
+  replyBlob = await phoneReply(r.rid, { ok: true, code: "918273", account: "alice@example.com" }, 50);
+  assert.equal((await ask({ t: "wait", rid: r.rid }, page("doc-TR1"))).code, "918273");
+  await ask({ t: "remember", user: "alice@example.com" }, page("doc-TR1"));
+  assert.equal((await ask({ t: "status" }, optionsPage)).name, "the owners laptop");
+  const lines = (await again())._test.trace().map((e) => e.line).join("\n");
+  assert.match(lines, /send posted code.request/);
+  assert.match(lines, /answer wait \{"ok":true,"done":true,"code":"6 digits","account":"named"\}/);
+  assert.match(lines, /worker start/);
+  for (const secret of ["918273", "alice", "the owners", store.pairing.l2p, store.pairing.p2l]) assert.doesNotMatch(lines, new RegExp(secret));
+  assert.equal(shape({ ok: true, qr: "sphinx:1?...", rid: "ABCDEFGHIJKLMNOPQRSTUV", items: [1, 2] }), '{"ok":true,"rid":"ABCDEF","items":2}');
+  const t = await ask({ t: "trace" }, optionsPage);
+  assert.ok(t.lines.length > 0 && t.lines.every((e) => typeof e.at === "number" && typeof e.line === "string"));
+  assert.equal((await ask({ t: "trace" }, page("doc-TR1"))).ok, false);    // the options page's only
+  await ask({ t: "traceClear" }, optionsPage);
+  assert.ok((await ask({ t: "trace" }, optionsPage)).lines.length <= 2);   // the clear and this ask
+});
+
+test("a relay call in flight keeps the worker alive: an extension API call every 20 s until it returns", async () => {
+  store.pairing = pairing();
+  let pings = 0;
+  chrome.runtime.getPlatformInfo = async () => { pings++; };
+  mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    let go;
+    fetchGate = new Promise((r) => { go = r; });
+    relayStatus = { paired: true, phone_seen: 1, now: 1 };
+    const inflight = _test.phoneStatus(true);
+    while (!calls.at(-1)?.[0].endsWith("/v1/status")) await new Promise((r) => setTimeout(r, 5));   // the fetch is now waiting on the gate
+    mock.timers.tick(KEEPALIVE_MS);
+    mock.timers.tick(KEEPALIVE_MS);
+    assert.equal(pings, 2);
+    go(); fetchGate = null;
+    await inflight;
+    mock.timers.tick(KEEPALIVE_MS);
+    assert.equal(pings, 2);                                 // nothing in flight: no more
+  } finally { mock.timers.reset(); delete chrome.runtime.getPlatformInfo; }
 });

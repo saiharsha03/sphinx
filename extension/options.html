@@ -90,6 +90,15 @@
     </div>
   </section>
 
+  <section id="tracing" hidden>
+    <span class="label">Timing trace</span>
+    <div class="group"><div class="pad">
+      <p class="muted">Every hop with its time, this browser session only: the page, the ask, the relay, the phone's answer. Flags and counts, never a code or a name.</p>
+      <pre class="mono" id="trace" style="margin:12px 0 0;font-size:11.5px;line-height:16px;white-space:pre-wrap;max-height:360px;overflow:auto"></pre>
+      <div class="row" style="margin-top:12px"><button class="secondary" id="traceRefresh">Refresh</button><button class="secondary" id="traceClear">Clear</button></div>
+    </div></div>
+  </section>
+
   <section id="danger" hidden>
     <span class="label danger">Danger zone</span>
     <div class="group danger"><div class="pad row">

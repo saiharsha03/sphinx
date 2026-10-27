@@ -13,6 +13,8 @@ async function render() {
   const s = await send({ t: "status" });
   $("paired").hidden = !s.paired;
   $("danger").hidden = !s.paired;
+  $("tracing").hidden = !s.paired;
+  if (s.paired) showTrace();
   $("pair").hidden = s.paired;
   if (!$("relay").value) $("relay").value = s.relay || DEFAULT_RELAY;
   // This laptop's own relay token, from local.json beside the extension (written from Secrets, never in git), so
@@ -63,4 +65,13 @@ $("show").onclick = async () => {
 $("allow").onclick = async () => { if (await chrome.permissions.request({ origins: saved.flatMap(patterns) })) await send({ t: "granted" }); render(); };
 $("refresh").onclick = async () => { $("domainsAt").textContent = "Asking the phone"; await send({ t: "refresh" }); render(); };
 $("unpair").onclick = async () => { if (confirm("Unpair this laptop? Also unpair it on the phone (Sphinx, Laptops).")) { await send({ t: "unpair" }); render(); } };
+
+// The worker's timing trace (2026-10-27): the last 80 hops, newest at the bottom, with the time to the millisecond.
+async function showTrace() {
+  const r = await send({ t: "trace" });
+  const lines = (r?.lines || []).slice(-80).map((e) => `${new Date(e.at).toISOString().slice(11, 23)}  ${e.line}`);
+  $("trace").textContent = lines.length ? lines.join("\n") : "Nothing yet. Open a saved site's sign-in page, then refresh.";
+}
+$("traceRefresh").onclick = showTrace;
+$("traceClear").onclick = async () => { await send({ t: "traceClear" }); showTrace(); };
 render();
