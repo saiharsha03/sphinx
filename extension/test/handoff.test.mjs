@@ -150,7 +150,12 @@ test("a received file downloads only through the popup, and must match its hash"
   // Not marked and still on the relay until the popup says the download started.
   assert.ok(!calls.some(([m, p]) => m === "DELETE" && p === `/v1/files/${fid}`));
   assert.notEqual(store.inbox.find((x) => x.id === it.id).saved, true);
-  assert.equal((await ask({ t: "saved", id: it.id }, POPUP)).ok, true);
+  assert.equal((await ask({ t: "saved", id: it.id, downloadId: 7 }, POPUP)).ok, true);
+  // Marked, and gone from the relay, only once Chrome reports that download complete; an interrupted one changes nothing.
+  await _test.downloaded({ id: 7, state: { current: "interrupted" } });
+  assert.notEqual(store.inbox.find((x) => x.id === it.id).saved, true);
+  assert.equal((await ask({ t: "saved", id: it.id, downloadId: 8 }, POPUP)).ok, true);
+  await _test.downloaded({ id: 8, state: { current: "complete" } });
   assert.ok(calls.some(([m, p]) => m === "DELETE" && p === `/v1/files/${fid}`));
   assert.equal(store.inbox.find((x) => x.id === it.id).saved, true);   // kept, marked
 });

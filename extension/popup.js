@@ -33,8 +33,8 @@ function row(it) {
       const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
       const url = URL.createObjectURL(new Blob([bytes], { type: f.mime }));
       try {
-        await chrome.downloads.download({ url, filename: f.name, saveAs: false, conflictAction: "uniquify" });
-        await send({ t: "saved", id: it.id });
+        const downloadId = await chrome.downloads.download({ url, filename: f.name, saveAs: false, conflictAction: "uniquify" });
+        await send({ t: "saved", id: it.id, downloadId });
       } catch { e.target.textContent = "Download refused"; e.target.disabled = false; }
       setTimeout(() => URL.revokeObjectURL(url), 60000);
       render();

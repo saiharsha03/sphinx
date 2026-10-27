@@ -574,7 +574,7 @@ async function options(m) {
       await register();
       await phoneStatus(true).catch(() => {});
       await alarm();
-      await setInbox([]).catch(() => {});
+      await editInbox(() => []).catch(() => {});
       return { ok: true };
     }
     default: return { ok: false, why: "unknown" };
@@ -668,7 +668,7 @@ async function setInbox(list) {
 // overlapped a poll), not `locked`, which the code path's seals share (Fable: a slow list write must not hold a code).
 let inboxChain = Promise.resolve();
 function editInbox(f) {
-  const run = inboxChain.then(async () => setInbox(f(await inbox())));
+  const run = inboxChain.then(async () => setInbox(await f(await inbox())));
   inboxChain = run.catch(() => {});
   return run;
 }
@@ -705,7 +705,8 @@ async function pollOutbox() {
   });
   await relay(p, "POST", "/outbox/ack", { rids: items.map((b) => b.rid).filter((x) => typeof x === "string") }).catch(() => {});
   if (got.length) {
-    await editInbox((list) => [...got.reverse(), ...list]);
+    // Committed only for the pairing that was polled: an unpair in between keeps the list clear (Codex, 2026-10-27).
+    await editInbox(async (list) => ((await get("pairing"))?.pid === p.pid ? [...got.reverse(), ...list] : list));
     for (const it of got) {
       try { chrome.notifications.create(`sphinx:${it.id}`, { type: "basic", iconUrl: "icons/icon128.png", title: "From your phone", message: `${label(it)}. Click to see it in Sphinx.` }); } catch { /* none */ }
     }
@@ -778,12 +779,12 @@ async function popup(m) {
       return { ok: true, name: it.file.name, mime: it.file.mime, data: b64std(data) };
     }
     case "saved": {
-      // Chrome took the download: the item is marked and the relay's copy goes.
+      // Chrome took the download (its id): the item is marked, and the relay's copy goes, only once Chrome says the
+      // download completed (Codex, 2026-10-27: a cancelled or failed one would have read Saved with nothing on disk).
       const it = (await inbox()).find((x) => x.id === m.id && x.type === "file");
       if (!it) return { ok: false, why: "no such file" };
-      await markInbox(m.id, { saved: true });
-      const p = await get("pairing");
-      if (p) await relay(p, "DELETE", `/files/${it.file.fid}`).catch(() => {});
+      if (!Number.isInteger(m.downloadId)) return { ok: false, why: "no download" };
+      downloading.set(m.downloadId, m.id);
       return { ok: true };
     }
     case "sendLink": return handoff({ type: "link", url: m.url, open: m.open === true });
@@ -823,8 +824,22 @@ async function menuClicked(info) {
 }
 
 chrome.alarms?.onAlarm?.addListener((a) => { if (a.name === ALARM) pollOutbox().catch(() => {}); });
+// Downloads the popup started, by Chrome's download id, until Chrome reports each complete (in memory: a worker restart
+// in between leaves the item downloadable again, and the relay keeps the file for its 10 minutes).
+const downloading = new Map();
+async function downloaded(delta) {
+  const id = downloading.get(delta.id);
+  if (!id || delta.state?.current !== "complete") { if (id && delta.state?.current === "interrupted") downloading.delete(delta.id); return; }
+  downloading.delete(delta.id);
+  const it = (await inbox()).find((x) => x.id === id && x.type === "file");
+  if (!it) return;
+  await markInbox(id, { saved: true });
+  const p = await get("pairing");
+  if (p) await relay(p, "DELETE", `/files/${it.file.fid}`).catch(() => {});
+}
+chrome.downloads?.onChanged?.addListener((d) => { downloaded(d).catch(() => {}); });
 chrome.contextMenus?.onClicked?.addListener((info) => { menuClicked(info).catch(() => {}); });
 chrome.notifications?.onClicked?.addListener((id) => { if (id.startsWith("sphinx:")) chrome.tabs.create({ url: chrome.runtime.getURL("popup.html") }); });
 
 // For the tests.
-export const _test = { popup, pollOutbox, menuClicked, sendFile, fetchFile, inbox, alarm, held, register, waiting, locked, send, ready, options, trusted, phoneStatus, paint, tabs, trace: () => trace };
+export const _test = { popup, pollOutbox, menuClicked, sendFile, fetchFile, inbox, alarm, held, register, waiting, locked, send, ready, options, trusted, phoneStatus, paint, tabs, trace: () => trace, downloaded };
