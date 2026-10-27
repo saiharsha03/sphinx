@@ -55,6 +55,17 @@ After 25 wrong tries in a row at one slot the relay locks that slot (`/var/lib/s
 left from an older relay locks every slot until removed). The backup itself lives in `/var/lib/sphinx/backup.json`
 (ciphertext only; whoever holds it can guess passcodes offline, so keep VPS backups of it as private as the VPS).
 
+## Publishing an app update (the phone's built-in updater)
+The relay serves one release from `/var/lib/sphinx/app` (`SPHINX_APP_DIR`, set in `sphinx-relay.service`) to any paired
+device: `app.json` and the APK. Sign the APK first (with your release key), then on the server as root:
+```
+bash /root/sphinx-src/deploy/publish-app.sh /root/sphinx-<version>.apk "what changed, one line"
+```
+It reads the version from the APK (needs `aapt2`: `apt install aapt`), writes `app.json`, copies the APK in (owner
+`sphinx`, 0640), drops older APKs, and the phone offers the update on its next check (every 15 minutes, and whenever Sphinx
+opens). A release with another signing key, a wrong hash or a lower versionCode is refused on the phone before Android
+ever sees it. To withdraw a release: `rm /var/lib/sphinx/app/app.json`.
+
 ## Undo
 `systemctl disable --now sphinx-relay`, remove the `import /etc/caddy/sphinx.caddy` line and reload Caddy, then
 `rm -rf /opt/sphinx /etc/sphinx /var/lib/sphinx /etc/systemd/system/sphinx-relay.service /etc/caddy/sphinx.caddy

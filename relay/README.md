@@ -49,6 +49,7 @@ The relay's address you then type on the extension's options page is `https://re
 | `SPHINX_TRUSTED_PROXIES` | `127.0.0.1` | Proxies whose `X-Forwarded-*` headers are believed |
 | `SPHINX_BACKUP_DIR` | the pairings file's folder | Where the backup slots and the try counts are kept |
 | `SPHINX_FCM_ACCOUNT` | empty | Path to a Firebase service account JSON (the Sphinx project's, never another app's). Empty or missing: no FCM wake (requests wait for the phone's next fetch) |
+| `SPHINX_APP_DIR` | empty | A folder holding the app's current release (`app.json` and its APK), see "App update". Empty: the app routes answer 404 |
 
 The relay fails closed (review 2026-10-27): without `SPHINX_REGISTER_TOKEN` it refuses to start, unless
 `SPHINX_INSECURE_DEV=1` says on purpose that it is a local test relay. Open, anyone could register pairings until the
@@ -112,6 +113,27 @@ pairings file's folder): `backup.json` (per slot a verifier, the salt and cost, 
 client IP then 30 s doubling, 10 free per slot then 60 s doubling (each at most a day), and after 25 in a row that slot
 locks until `rm /var/lib/sphinx/backup.<slot>.locked` on the VPS (an old `backup.locked` locks every slot). The client IP behind Caddy's unix socket is Caddy's X-Forwarded-For.
 Anyone with `backup.json` can guess passcodes offline, limited only by the passcode and Argon2id's cost.
+
+## App update
+
+The phone updates itself from the relay. The owner signs a release and puts it in `SPHINX_APP_DIR`
+(`/var/lib/sphinx/app` on the VPS): the APK and, written last, `app.json`:
+
+```
+{"versionCode": 7, "versionName": "1.2.0", "sha256": "<64 hex of the APK>", "size": 4321000,
+ "file": "sphinx-1.2.0.apk", "notes": "optional, up to 2000 chars"}
+```
+
+`file` is a plain name in that folder ending `.apk` (no path), `versionCode` > 0, `size` 1..100,000,000. The relay
+reads the folder fresh on every call, so a release can be replaced while it runs; a json that doesn't validate, or an
+APK that is missing or not the stated size, counts as no release (404) and is logged once by its reason.
+
+| Route | Who | What |
+|---|---|---|
+| `GET /v1/app` | either | The validated `app.json` fields; 404 `no release` when there is none |
+| `GET /v1/app/file` | either | The APK bytes (`application/vnd.android.package-archive`, `Content-Length` set), with `x-sphinx-sha256` = the json's sha256 for the phone to check |
+
+Both are signed like every other route, by any pairing; the registration token is not needed.
 
 ## Dependencies
 

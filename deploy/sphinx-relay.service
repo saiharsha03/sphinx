@@ -9,7 +9,7 @@ User=sphinx
 Group=sphinx
 # Settings: SPHINX_REGISTER_TOKEN, and SPHINX_FCM_ACCOUNT when the optional service account is installed.
 EnvironmentFile=/etc/sphinx/relay.env
-Environment=SPHINX_STATE=/var/lib/sphinx/sphinx-relay.json PYTHONDONTWRITEBYTECODE=1
+Environment=SPHINX_STATE=/var/lib/sphinx/sphinx-relay.json SPHINX_APP_DIR=/var/lib/sphinx/app PYTHONDONTWRITEBYTECODE=1
 # The socket's directory (Caddy, group caddy, may connect; nobody else) comes from /etc/tmpfiles.d/sphinx-relay.conf
 # (install.sh): ReadWritePaths needs it to exist before the namespace is set up, which an ExecStartPre is too late for.
 ExecStartPre=+/bin/rm -f /run/sphinx-relay/relay.sock

@@ -45,6 +45,7 @@ import urllib.error
 import urllib.request
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 PID = re.compile(r"^[A-Za-z0-9_-]{22}$")          # 16 random bytes, b64url
@@ -503,6 +504,47 @@ def audit(what: str, pid: str) -> None:
     log.warning("TIMING %.3f %s %s", time.time(), what, pid[:6])
 
 
+# ---- the app's self-update: a release the owner puts in SPHINX_APP_DIR, served to any pairing ----
+# The owner signs the APK and writes app.json next to it on the VPS; the relay only reads, fresh on every call, so the
+# release can be replaced while it runs. The phone checks the sha256 against the bytes before installing.
+APK_NAME = r"^[A-Za-z0-9._-]{1,100}\.apk$"       # a plain file name in the folder, never a path
+
+
+class AppRelease(BaseModel):
+    versionCode: int = Field(gt=0)
+    versionName: str = Field(min_length=1, max_length=40)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=1, le=100_000_000)
+    file: str = Field(pattern=APK_NAME)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+_app_refused: str | None = None   # why the last read found no release, so it is logged once and not on every call
+
+
+def app_release(folder: str | None) -> tuple[AppRelease, str] | None:
+    """The release in [folder]: app.json validated, and the path of the APK it names, when that file is there with the
+    stated size. None (the routes say 404) without a folder or an app.json; also for a json that fails AppRelease or an
+    APK that is missing or another size, logged once by its reason (never the json's text)."""
+    global _app_refused
+    if not folder or not os.path.isfile(os.path.join(folder, "app.json")):
+        return None
+    try:
+        with open(os.path.join(folder, "app.json"), encoding="utf-8") as f:
+            rel = AppRelease.model_validate_json(f.read())
+        path = os.path.join(folder, rel.file)
+        if not os.path.isfile(path) or os.path.getsize(path) != rel.size:
+            raise FileNotFoundError("the named APK, at the stated size")
+    except (OSError, ValueError) as e:
+        reason = f"{type(e).__name__}: {e}" if isinstance(e, FileNotFoundError) else type(e).__name__
+        if reason != _app_refused:
+            _app_refused = reason
+            audit(f"app release refused ({reason})", "")
+        return None
+    _app_refused = None
+    return rel, path
+
+
 # ---- the encrypted backup (docs/DESIGN.md, "Backup") ----
 # One user's relay: a slot "pass" (the backup passcode's) and at most one recovery-phrase slot, each holding a verifier
 # (SHA-256 of an auth value the phone derives from the passcode or the phrase), the passcode's public Argon2id salt and
@@ -681,9 +723,10 @@ def client_ip(request: Request) -> str:
 
 
 def create_app(relay: Relay | None = None, register_token: str | None = None, backup: Backup | None = None,
-               insecure_dev: bool | None = None) -> FastAPI:
+               insecure_dev: bool | None = None, app_dir: str | None = None) -> FastAPI:
     token = os.environ.get("SPHINX_REGISTER_TOKEN", "") if register_token is None else register_token
     insecure = os.environ.get("SPHINX_INSECURE_DEV") == "1" if insecure_dev is None else insecure_dev
+    app_dir = (os.environ.get("SPHINX_APP_DIR") or None) if app_dir is None else app_dir
     # Fail closed (review 2026-10-27): without a registration token anyone could register pairings and reach the backup
     # routes. Only an explicit SPHINX_INSECURE_DEV=1 (local testing) runs it open.
     if not token and not insecure:
@@ -922,6 +965,27 @@ def create_app(relay: Relay | None = None, register_token: str | None = None, ba
         backup.drop(slot)
         audit("backup removed", slot)
         return {"ok": True}
+
+    # ---- the app's self-update (either end may ask; the phone installs, the laptop may show the version) ----
+    @app.get("/v1/app")
+    async def app_get(request: Request):
+        pid, _ = await signed(request)
+        r = app_release(app_dir)
+        if r is None:
+            raise HTTPException(404, "no release")
+        audit("app checked", pid)
+        return r[0].model_dump()
+
+    @app.get("/v1/app/file")
+    async def app_file(request: Request):
+        # The APK itself, read from the folder now (the owner may have replaced it); the json's sha256 rides in a
+        # header so the phone can refuse bytes that don't match it.
+        pid, _ = await signed(request)
+        r = app_release(app_dir)
+        if r is None:
+            raise HTTPException(404, "no release")
+        audit("app sent", pid)
+        return FileResponse(r[1], media_type="application/vnd.android.package-archive", headers={"x-sphinx-sha256": r[0].sha256})
 
     @app.get("/v1/status")
     async def status(request: Request):
