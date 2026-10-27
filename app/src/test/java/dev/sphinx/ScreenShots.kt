@@ -45,6 +45,16 @@ class ScreenShots {
         Pairing("p2", "Home desktop", relay = "https://relay.example.com", added = day - 86_400_000L * 30, push = false, l2p = ByteArray(32) { 2 }),
         Pairing("p3", "Signer", relay = "https://relay.example.com", added = day, push = true, signer = true, l2p = ByteArray(32) { 3 }),
     )
+    // Relative to the clock, so the rows read "just now" and "12 min ago" whenever the shot is taken.
+    private val now = System.currentTimeMillis()
+    private val sent = listOf(
+        SentItem("s1", now - 20_000L, "Chrome laptop", SentKind.TEXT, text = "Meeting room code 4471"),
+        SentItem("s2", now - 12 * 60_000L, "Chrome laptop", SentKind.LINK, url = "https://example.com/docs"),
+        SentItem("s3", now - 3 * 86_400_000L, "Chrome laptop", SentKind.TEXT, text = "Pick up the parcel at the front desk before 6, they close early on Fridays"),
+        SentItem("s4", now - 40_000L, "Chrome laptop", SentKind.FILE, name = "invoice-oct.pdf", mime = "application/pdf", size = 184 * 1024, uri = "content://media/external/downloads/1"),
+        SentItem("s5", now - 2 * 3_600_000L, "Chrome laptop", SentKind.FILE, name = "team-photo.jpg", mime = "image/jpeg", size = 2_300 * 1024, uri = "content://media/external/downloads/2"),
+        SentItem("s6", now - 5 * 86_400_000L, "Chrome laptop", SentKind.FILE, name = "notes.txt", mime = "text/plain", size = 900, uri = "content://media/external/downloads/3"),
+    )
     private val samples = Samples(
         keys = listOf(
             SafeEntry("k1", "Google recovery codes", "text", size = 220, added = day),
@@ -54,7 +64,7 @@ class ScreenShots {
         unlock = SealedUnlock("3fa9c1", day), version = "1.1.0 (2)",
     )
     private fun home(tab: Tab, shown: Triple<String, String, Int>? = null) =
-        Home(tab = tab, accounts = accounts, pairings = laptops, shown = shown, fullScreen = true, overApps = false, watcher = true, textSites = listOf("shop.example.com"))
+        Home(tab = tab, accounts = accounts, pairings = laptops, sent = sent, shown = shown, fullScreen = true, overApps = false, watcher = true, textSites = listOf("shop.example.com"))
 
     @Test @Config(sdk = [35], qualifiers = "w393dp-h852dp-xhdpi")
     fun codes() = shot("codes") { SphinxFrame(home(Tab.ACCOUNTS, Triple("a1", "842190", 21)), Calls(samples = samples), true, null) {} }
@@ -79,6 +89,12 @@ class ScreenShots {
 
     @Test @Config(sdk = [35], qualifiers = "w393dp-h852dp-xhdpi")
     fun laptops() = shot("laptops") { SphinxFrame(home(Tab.LAPTOPS), Calls(samples = samples, opened = setOf("p2")), true, null) {} }
+
+    @Test @Config(sdk = [35], qualifiers = "w393dp-h852dp-xhdpi")
+    fun texts() = shot("texts") { SphinxFrame(home(Tab.TEXTS), Calls(samples = samples), true, null) {} }
+
+    @Test @Config(sdk = [35], qualifiers = "w393dp-h852dp-xhdpi")
+    fun files() = shot("files") { SphinxFrame(home(Tab.FILES), Calls(samples = samples), true, null) {} }
 
     @Test @Config(sdk = [35], qualifiers = "w393dp-h852dp-xhdpi")
     fun approve() = shot("approve") {

@@ -62,11 +62,21 @@ object Handoff {
     private fun channel(c: Context) = c.getSystemService(NotificationManager::class.java).createNotificationChannel(
         NotificationChannel(CHANNEL, "From your laptop", NotificationManager.IMPORTANCE_DEFAULT).apply { description = "Links, text and files your laptop sent" })
 
-    /** Something a laptop sent. A file is fetched and saved off the wake's thread; the rest is one notification. */
+    /**
+     * Something a laptop sent. A file is fetched and saved off the wake's thread; the rest is one notification. Each is
+     * also kept, for the Texts and Files tabs, until the owner removes it (a file only once it is saved).
+     */
     fun receive(c: Context, p: Pairing, rid: String, it: HandoffItem) {
         if (it.type == "file") Thread { runCatching { saveFile(c, p, rid, it.file!!) }.onFailure { e -> Log.warn("handoff file not saved", e.javaClass.simpleName) } }.start()
-        else notify(c, rid, it, p.name, null)
+        else {
+            notify(c, rid, it, p.name, null)
+            keep(c, if (it.type == "link") SentItem(kind = SentKind.LINK, url = it.url, laptop = p.name) else SentItem(kind = SentKind.TEXT, text = it.text, laptop = p.name))
+        }
     }
+
+    private fun keep(c: Context, item: SentItem) =
+        runCatching { SphinxStore.get(c).addSent(item.copy(id = SphinxCrypto.newId(12), at = System.currentTimeMillis())) }
+            .onFailure { e -> Log.warn("handoff not kept", e.javaClass.simpleName) }
 
     private fun saveFile(c: Context, p: Pairing, rid: String, f: FileRef) {
         val data = HandoffRules.assemble(f, (0 until f.chunks).map { RelayClient.getChunk(p, f.fid, it) }) ?: run { Log.warn("handoff file refused"); return }
@@ -84,6 +94,7 @@ object Handoff {
         data.fill(0)
         Log.info("handoff file saved to Download/Sphinx")
         notify(c, rid, HandoffItem("file", file = f), p.name, uri)
+        keep(c, SentItem(kind = SentKind.FILE, name = f.name, mime = f.mime, size = f.size, uri = uri.toString(), laptop = p.name))
     }
 
     private fun notify(c: Context, rid: String, it: HandoffItem, laptop: String, saved: Uri?) {

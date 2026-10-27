@@ -450,7 +450,7 @@ private fun NavCell(it: NavItem, modifier: Modifier) {
 }
 
 /** Sphinx's line icons, the mockup's, drawn on a 24-unit grid with a 1.6 px stroke. */
-enum class Glyph { CODES, KEYS, LAPTOPS, SETTINGS, LOCK }
+enum class Glyph { CODES, KEYS, LAPTOPS, TEXTS, FILES, SETTINGS, LOCK }
 
 @Composable
 fun GlyphIcon(g: Glyph, tint: Color, size: Dp = 24.dp) = Canvas(Modifier.size(size)) { glyph(g, tint) }
@@ -468,6 +468,11 @@ private fun DrawScope.glyph(g: Glyph, c: Color) {
             lineTo(5f * u, 6f * u); close()
         }, c, style = stroke)
         Glyph.LAPTOPS -> { drawRoundRect(c, Offset(4f * u, 5f * u), Size(16f * u, 11f * u), CornerRadius(1.5f * u), style = stroke); line(2f, 19f, 22f, 19f) }
+        Glyph.TEXTS -> { line(4f, 7f, 20f, 7f); line(4f, 12f, 16f, 12f); line(4f, 17f, 11f, 17f) }
+        Glyph.FILES -> drawPath(Path().apply {
+            moveTo(6f * u, 3f * u); lineTo(14f * u, 3f * u); lineTo(19f * u, 8f * u); lineTo(19f * u, 21f * u); lineTo(6f * u, 21f * u); close()
+            moveTo(14f * u, 3f * u); lineTo(14f * u, 8f * u); lineTo(19f * u, 8f * u)
+        }, c, style = stroke)
         Glyph.SETTINGS -> {
             drawCircle(c, 3f * u, Offset(12f * u, 12f * u), style = stroke)
             line(12f, 2f, 12f, 5f); line(12f, 19f, 12f, 22f); line(2f, 12f, 5f, 12f); line(19f, 12f, 22f, 12f)

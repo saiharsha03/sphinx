@@ -95,8 +95,9 @@ ciphertext only. Nothing that arrives is acted on without a click or a tap.
   laptop", one tap; else text or a file) seals `handoff.send` in its own direction **`'p'`** with its own counter
   (`Pairing.pushSent`, the laptop's `pushRecv`), so it never races the replies' counter, and posts it to the laptop's
   outbox on the relay (`POST /v1/outbox`). The extension looks every 30 s (`chrome.alarms`) and when the popup opens
-  (`GET /v1/outbox`, then acks), checks each item (`handoff.js item`), lists it in the popup (storage.session, 10
-  minutes), shows a badge count and a notification. A link opens in a new tab only at the popup's Open; text is copied
+  (`GET /v1/outbox`, then acks), checks each item (`handoff.js item`), lists it in the popup (storage.local, kept
+  until removed, at most 200, in Texts and Files; a file's chunks still leave the relay after 10 minutes, so an undownloaded
+  one is marked gone), shows a badge count and a notification. A link opens in a new tab only at the popup's Open; text is copied
   only at Copy; a file downloads through `chrome.downloads` only at Download.
 - **Rules on both ends.** Links: http or https only, no user:password, at most 2,048 characters. Text: at most 3,000
   bytes (the sealed envelope must fit the relay's 4 KB). Files: at most 8 MiB; the name loses any folders, control
@@ -107,6 +108,14 @@ ciphertext only. Nothing that arrives is acted on without a click or a tap.
   its place, checks size and hash, and deletes the file from the relay. The relay keeps chunks in memory only: at most
   16 chunks a file, 24 MiB a pairing, 64 MiB in all (refused past that, never evicted), each gone after 10 minutes.
   Vectors: `file` and `push` in `extension/test/vectors.json`.
+
+### What the laptop sent, on the phone (2026-10-27)
+
+Every handoff a laptop sends is kept on the phone as a `SentItem` (`Sent.kt`: id, time, laptop name, kind TEXT, LINK or
+FILE, the text or url or the saved file's name, mime, size and MediaStore uri), sealed in the app's prefs like the
+accounts (`SphinxStore.sent`, newest first, at most 200, not in the backup). Two tabs show them: **Texts** (texts and
+links: Copy, Share or Open, remove) and **Files** (saved to Download/Sphinx: Open, Share, remove the entry; the file
+stays). Clear all needs a second tap. The notification for a text still copies it at a tap.
 
 ## Keys safe
 A tab for recovery material: text (recovery phrases, backup codes, up to 16 KB) and small files (keystores, JSON keys,
@@ -188,6 +197,18 @@ phrase, BK, or a secret. Not built (owner, 2026-10-26): email codes, a non-Googl
   in the build, no Play services) it says so and pairs nothing. A relay that answers `{push: false}` (no service
   account yet) is shown on the Laptops screen: its requests wait for the next fetch. A release build refuses to start
   without `app/google-services.json` (`preReleaseBuild` in `app/build.gradle.kts`).
+
+## App update (2026-10-27)
+
+The relay serves one release to any signed pairing from `SPHINX_APP_DIR` (`/var/lib/sphinx/app`): `app.json`
+(`versionCode`, `versionName`, `sha256`, `size`, `file`, optional `notes`) and the APK beside it, read fresh on every
+call (`GET /v1/app`, `GET /v1/app/file`). Nothing uploads it: the owner (or the Signer's operator) places a signed APK
+there. The phone checks on its heartbeat and whenever it opens (`Update.check`, its own call, never a wake), and shows
+one notification per new `versionCode`. Update, in Settings: the APK is downloaded to the app's cache, then checked in
+order (size, sha256, a readable package named `dev.sphinx` whose versionCode is the release's and above the installed
+one, and signing certificates equal to the installed app's), and only then handed to Android's installer through a
+FileProvider; Android still asks once. "Install unknown apps" must be allowed for Sphinx the first time. A build signed
+with any other key, or a tampered file, never reaches the installer.
 
 ## Pairing
 The extension's options page shows a QR: `sphinx:1?p=<pairing id>&k=<laptop X25519 public>&s=<16-byte secret>&r=<relay>&n=<name>[&t=<relay token>]`.

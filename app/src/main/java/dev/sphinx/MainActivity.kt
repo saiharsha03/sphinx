@@ -50,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -89,11 +90,12 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         Sphinx.channels(this)
         Thread { if (SphinxStore.get(applicationContext).pairings().isNotEmpty()) Push.schedule(applicationContext) }.start()
-        setContent { SphinxTheme { SphinxScreen() } }
+        // The update notification's tap lands on Settings, where the Update row is.
+        setContent { SphinxTheme { SphinxScreen(if (intent?.getBooleanExtra(Update.EXTRA, false) == true) Tab.SETTINGS else Tab.ACCOUNTS) } }
     }
 }
 
-enum class Tab(val word: String) { ACCOUNTS("Codes"), KEYS("Keys"), LAPTOPS("Laptops"), SETTINGS("Settings") }
+enum class Tab(val word: String) { ACCOUNTS("Codes"), KEYS("Keys"), LAPTOPS("Laptops"), TEXTS("Texts"), FILES("Files"), SETTINGS("Settings") }
 
 /** An import in progress: what the QR held, which are ticked, what was refused and why. */
 data class Picking(val found: List<Imported>, val ticked: Set<Int>, val refused: List<Refused>, val batch: Pair<Int, Int>?)
@@ -103,6 +105,8 @@ data class Home(
     val tab: Tab = Tab.ACCOUNTS,
     val accounts: List<CodeAccount> = emptyList(),
     val pairings: List<Pairing> = emptyList(),
+    /** What laptops sent, newest first (SphinxStore.sent): the Texts and Files tabs. */
+    val sent: List<SentItem> = emptyList(),
     val picking: Picking? = null,
     val shown: Triple<String, String, Int>? = null,
     val editing: String? = null,
@@ -148,11 +152,11 @@ object AppLock {
 }
 
 @Composable
-fun SphinxScreen() {
+fun SphinxScreen(first: Tab = Tab.ACCOUNTS) {
     val ctx = LocalContext.current
     val app = ctx.applicationContext
     val scope = rememberCoroutineScope()
-    var view by remember { mutableStateOf(Home()) }
+    var view by remember { mutableStateOf(Home(tab = first)) }
     var bump by remember { mutableIntStateOf(0) }
     var unlocked by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf<String?>(null) }
@@ -176,6 +180,8 @@ fun SphinxScreen() {
         if (AppLock.onStart(stoppedAt, now, wasInside)) { lock(); unlock() }
         // The app in front: one look at each inbox (the only fetch besides the FCM wake and the heartbeat).
         Thread { runCatching { Sphinx.wake(app) } }.start()
+        // And whether the relay holds a newer Sphinx (its own call, no wake).
+        Update.checkInBackground(app)
         bump++
     }
     // An import left half done (back, a lock, the screen going) wipes the secrets it held.
@@ -184,11 +190,11 @@ fun SphinxScreen() {
         if (!unlocked) return@LaunchedEffect
         val s = SphinxStore.get(app)
         val (a, p) = withContext(Dispatchers.IO) { s.accounts() to s.pairings() }
-        val t = withContext(Dispatchers.IO) { s.textSites() }
+        val (t, sent) = withContext(Dispatchers.IO) { s.textSites() to s.sent() }
         val watcher = Settings.Secure.getString(app.contentResolver, "enabled_notification_listeners")?.contains(app.packageName) == true
         val g = withContext(Dispatchers.IO) { runCatching { Backups.waiting(app) }.getOrNull() }
         val stuck = withContext(Dispatchers.IO) { runCatching { Backups.local(app).retirePending() }.getOrDefault(false) }
-        view = view.copy(accounts = a, pairings = p, textSites = t, fullScreen = Sphinx.canFullScreen(app), overApps = Settings.canDrawOverlays(app), watcher = watcher, google = g,
+        view = view.copy(accounts = a, pairings = p, sent = sent, textSites = t, fullScreen = Sphinx.canFullScreen(app), overApps = Settings.canDrawOverlays(app), watcher = watcher, google = g,
             retiring = stuck)
     }
     // A shown code counts down and hides itself when its period ends.
@@ -275,6 +281,8 @@ fun SphinxScreen() {
             }
         },
         unpair = { p -> scope.launch { withContext(Dispatchers.IO) { Sphinx.unpair(app, p.pid) }; bump++ } },
+        removeSent = { id -> scope.launch { withContext(Dispatchers.IO) { SphinxStore.get(app).removeSent(id) }; bump++ } },
+        clearSent = { kind -> scope.launch { withContext(Dispatchers.IO) { SphinxStore.get(app).clearSent(SentRules.tabOf(kind)) }; bump++ } },
         openFullScreen = { settings(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT) },
         openOverApps = { settings(Settings.ACTION_MANAGE_OVERLAY_PERMISSION) },
         openWatcher = { runCatching { ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } },
@@ -313,6 +321,8 @@ fun SphinxFrame(view: Home, calls: Calls, unlocked: Boolean, failure: String?, o
         NavItem(Glyph.CODES, Tab.ACCOUNTS.word, view.tab == Tab.ACCOUNTS) { calls.tab(Tab.ACCOUNTS) },
         NavItem(Glyph.KEYS, Tab.KEYS.word, view.tab == Tab.KEYS) { calls.tab(Tab.KEYS) },
         NavItem(Glyph.LAPTOPS, Tab.LAPTOPS.word, view.tab == Tab.LAPTOPS) { calls.tab(Tab.LAPTOPS) },
+        NavItem(Glyph.TEXTS, Tab.TEXTS.word, view.tab == Tab.TEXTS) { calls.tab(Tab.TEXTS) },
+        NavItem(Glyph.FILES, Tab.FILES.word, view.tab == Tab.FILES) { calls.tab(Tab.FILES) },
         NavItem(Glyph.SETTINGS, Tab.SETTINGS.word, view.tab == Tab.SETTINGS) { calls.tab(Tab.SETTINGS) },
     )
     if (wide) Row(Modifier.fillMaxSize().background(p.canvas)) {
@@ -346,6 +356,9 @@ class Calls(
     val delete: (CodeAccount) -> Unit = {},
     val pair: () -> Unit = {},
     val unpair: (Pairing) -> Unit = {},
+    /** One sent item gone (its id), or a whole tab (clearing TEXT clears the links too; FILE only the file entries). */
+    val removeSent: (String) -> Unit = {},
+    val clearSent: (SentKind) -> Unit = {},
     val openFullScreen: () -> Unit = {},
     val openOverApps: () -> Unit = {},
     val openWatcher: () -> Unit = {},
@@ -430,6 +443,30 @@ private fun Content(v: Home, calls: Calls, margin: Int) {
                 item { Header("Keys", "Each one opens with your fingerprint") }
                 v.note?.let { item { NoteCard(it) } }
                 item { KeysPane(calls.samples) }
+            }
+            v.tab == Tab.TEXTS -> {
+                item { Header("Texts", "From your laptops") }
+                v.note?.let { item { NoteCard(it) } }
+                val texts = v.sent.filter { it.kind != SentKind.FILE }
+                item {
+                    Group {
+                        if (texts.isEmpty()) ListRow("Nothing yet.", "Text and links your laptop sends show here and stay until you remove them.")
+                        texts.forEachIndexed { i, s -> if (i > 0) Hairline(); SentRow(s, calls) }
+                    }
+                }
+                if (texts.isNotEmpty()) item { ClearAll { calls.clearSent(SentKind.TEXT) } }
+            }
+            v.tab == Tab.FILES -> {
+                item { Header("Files", "Saved to Download/Sphinx") }
+                v.note?.let { item { NoteCard(it) } }
+                val files = v.sent.filter { it.kind == SentKind.FILE }
+                item {
+                    Group {
+                        if (files.isEmpty()) ListRow("Nothing yet.", "Files your laptop sends are saved to Download/Sphinx and listed here. Removing one here leaves the file in Downloads.")
+                        files.forEachIndexed { i, s -> if (i > 0) Hairline(); SentRow(s, calls) }
+                    }
+                }
+                if (files.isNotEmpty()) item { ClearAll { calls.clearSent(SentKind.FILE) } }
             }
             else -> {
                 item { Header("Settings") }
@@ -596,6 +633,65 @@ fun PairingRow(p: Pairing, calls: Calls) {
     }
 }
 
+/**
+ * One thing a laptop sent: a text (its first line), a link (its host) or a file (its name), who sent it and when, and
+ * what to do with it. Nothing opens by itself: Open and Share are a tap, like the notification's. The × forgets the
+ * entry; a file stays in Downloads.
+ */
+@Composable
+private fun SentRow(s: SentItem, calls: Calls) {
+    val p = Sx.p
+    val ctx = LocalContext.current
+    fun start(i: Intent) { runCatching { ctx.startActivity(i) } }
+    fun share(i: Intent) = start(Intent.createChooser(i, null))
+    val title = when (s.kind) {
+        SentKind.TEXT -> SentRules.firstLine(s.text.orEmpty())
+        SentKind.LINK -> runCatching { java.net.URI(s.url).host }.getOrNull() ?: s.url.orEmpty()
+        SentKind.FILE -> s.name.orEmpty()
+    }
+    val time = SentRules.ago(s.at, System.currentTimeMillis())
+    val line = if (s.kind == SentKind.FILE) "${maxOf(1, s.size / 1024)} KB · ${s.laptop} · $time" else "${s.laptop} · $time"
+    Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                Text(title, style = Type.bodyMd.copy(fontWeight = FontWeight.Medium), color = p.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(line, Modifier.padding(top = 2.dp), style = Type.bodySm, color = p.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Box(Modifier.size(32.dp).clip(CircleShape).clickable(role = Role.Button, onClickLabel = "Remove") { calls.removeSent(s.id) }, contentAlignment = Alignment.Center) {
+                Text("×", style = Type.bodyLg, color = p.text2)
+            }
+        }
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (s.kind) {
+                SentKind.TEXT -> {
+                    SxButton("Copy", { SecureClipboard.copy(ctx, "text", s.text.orEmpty(), clearMs = 60_000L) }, kind = Kind.SECONDARY, small = true)
+                    SxButton("Share", { share(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, s.text)) }, kind = Kind.SECONDARY, small = true)
+                }
+                SentKind.LINK -> {
+                    // Only an http(s) link (checked again) becomes a browser intent, as in the notification.
+                    HandoffRules.httpUrl(s.url)?.let { u -> SxButton("Open", { start(Intent(Intent.ACTION_VIEW, Uri.parse(u))) }, kind = Kind.SECONDARY, small = true) }
+                    SxButton("Copy", { SecureClipboard.copy(ctx, "text", s.url.orEmpty(), clearMs = 60_000L) }, kind = Kind.SECONDARY, small = true)
+                }
+                SentKind.FILE -> {
+                    val uri = Uri.parse(s.uri.orEmpty())
+                    SxButton("Open", { start(Intent(Intent.ACTION_VIEW).setDataAndType(uri, s.mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }, kind = Kind.SECONDARY, small = true)
+                    SxButton("Share", { share(Intent(Intent.ACTION_SEND).setType(s.mime).putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) },
+                        kind = Kind.SECONDARY, small = true)
+                }
+            }
+        }
+    }
+}
+
+/** Forgets a whole tab: a second tap within 3 s. */
+@Composable
+private fun ClearAll(onClear: () -> Unit) {
+    var confirm by remember { mutableStateOf(false) }
+    LaunchedEffect(confirm) { if (confirm) { delay(3000); confirm = false } }
+    SxButton(if (confirm) "Tap again to clear" else "Clear all", { if (confirm) { onClear(); confirm = false } else confirm = true }, Modifier.fillMaxWidth(),
+        kind = if (confirm) Kind.DANGER else Kind.SECONDARY)
+}
+
 /** A system setting Sphinx needs: its state as a toggle; off, the row (or the toggle) opens the setting. */
 @Composable
 private fun Setting(title: String, line: String, on: Boolean, open: () -> Unit, rule: Boolean) =
@@ -671,6 +767,11 @@ private fun SettingsTab(v: Home, calls: Calls) {
         Column {
             SectionLabel("Signing")
             SigningPane(signing, calls.scan, v.pairings.filter { it.signer }, calls)
+        }
+        Column {
+            SectionLabel("Update")
+            val update by Update.state.collectAsState()
+            UpdatePane(update, version, onCheck = { Update.checkInBackground(ctx.applicationContext) }, onUpdate = { Update.installInBackground(ctx.applicationContext, it) })
         }
         Column {
             SectionLabel("Keep out of Sphinx")

@@ -44,8 +44,8 @@ data class CodeAccount(
 }
 
 /**
- * The accounts and pairings, in two sealed slots of Sphinx's prefs (SealedPrefs). The codes key is `sphinx.codes` in
- * Keystore. Nothing here is ever written to the log or the relay. Call on IO.
+ * The accounts, pairings and what laptops sent, each in a sealed slot of Sphinx's prefs (SealedPrefs). The codes key is
+ * `sphinx.codes` in Keystore. Nothing here is ever written to the log or the relay. Call on IO.
  */
 class SphinxStore(
     private val read: (String) -> String?,
@@ -113,6 +113,17 @@ class SphinxStore(
         backup?.update { it.copy(textSites = clean) }
         changed()
     }
+
+    /** What laptops sent (SentItem), newest first; its own sealed slot, outside the backup. */
+    fun sent(): List<SentItem> = read(SENT)?.let { runCatching { json.readValue(it, object : TypeReference<List<SentItem>>() {}) }.getOrNull() }.orEmpty()
+
+    private fun saveSent(l: List<SentItem>) = write(SENT, if (l.isEmpty()) null else json.writeValueAsString(l))
+
+    fun addSent(item: SentItem) = synchronized(lock) { saveSent(SentRules.add(sent(), item)) }
+
+    fun removeSent(id: String) = synchronized(lock) { saveSent(SentRules.remove(sent(), id)) }
+
+    fun clearSent(kinds: Set<SentKind>) = synchronized(lock) { saveSent(SentRules.clear(sent(), kinds)) }
 
     private fun aad(id: String) = "sphinx/v1\n$id".toByteArray()
 
@@ -230,6 +241,7 @@ class SphinxStore(
         const val PAIRINGS = "pairings"
         const val LAST = "last"
         const val TEXT_SITES = "textsites"
+        const val SENT = "sent"
         const val KEY_ALIAS = "sphinx.codes"
 
         @Volatile private var instance: SphinxStore? = null
