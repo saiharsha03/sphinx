@@ -43,8 +43,8 @@ android {
         applicationId = "dev.sphinx"
         minSdk = 31
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.2.1"
+        versionCode = 5
+        versionName = "1.2.2"
         firebase.forEach { (k, v) -> resValue("string", k, v) }
         // Where a new phone looks for the backup (Restore offers it, editable): local.properties sphinx.relay, else empty (typed on the phone).
         resValue("string", "sphinx_relay", setting("sphinx.relay", "SPHINX_RELAY") ?: "")

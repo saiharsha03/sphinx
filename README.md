@@ -224,7 +224,7 @@ or email**.
 ## Using it
 | on the laptop | what happens |
 |---|---|
-| A saved site's sign-in page opens | phone asks to have the code ready for 30 s; approve and the code field fills by itself |
+| A saved site's sign-in page opens | phone asks to have the code ready for 60 s; approve and the code field fills by itself |
 | A 2FA field appears (no pre-approval) | phone asks "Code for site?"; approve and it's typed and submitted |
 | Click into the code field | asks again whenever no request is waiting (only your real clicks count) |
 | Right-click → Sphinx → Open this page on my phone | the phone gets a notification: Open / Copy |
@@ -335,7 +335,7 @@ Each limit protects something, and the code comment beside it says what.
 |---|---|
 | request lifetime | 60 s |
 | pairing QR | 10 minutes |
-| pre-approval window | 30 s, one code used |
+| pre-approval window | 60 s, one code used |
 | sealed message | 4 KB (text in a handoff: about 3,000 bytes) |
 | file handoff | 8 MiB per file (512 KiB chunks), 24 MiB per pairing, 64 MiB on the relay; gone after 10 minutes |
 | relay requests | 10 per minute per pairing; 60 signed calls per minute per pairing |

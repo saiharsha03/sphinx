@@ -63,7 +63,7 @@ extension `extension/`.
   once per page and only while the page is visible, the worker sends `code.ready` with the tab's host from Chrome and
   the same user name hint. The phone resolves it like a `code.request` and asks "Signing in to github.com: approve the
   code for 30 s?". The fingerprint opens a window for that pairing, that site (eTLD+1, `Domains.site`, so AWS's
-  regional sign-in hosts count) and that account: **30 s** (`SphinxLogic.WINDOW_MS`), so a compromised laptop can't
+  regional sign-in hosts count) and that account: **60 s** (`SphinxLogic.WINDOW_MS`; 30 until 2026-10-27, when Prevent's 40 s sign-in outran it), so a compromised laptop can't
   pull codes long after. The Keystore key allows one use per fingerprint, so the window holds the codes of the TOTP
   periods it spans, computed at the yes (`SphinxStore.codes`, one unwrap), never the secret; in memory only
   (`PreApproval`). The reply `code.ready.reply {ok, for, account, codes: [{code, from, until}]}` carries those codes,

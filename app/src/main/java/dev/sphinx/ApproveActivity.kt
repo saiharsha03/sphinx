@@ -51,7 +51,7 @@ import kotlinx.coroutines.withContext
  * The question over the lock screen ("Code for github.com (work)?"), started by the full-screen notification. It shows
  * when locked and turns the screen on, but never dismisses the keyguard: approving sends the code, the phone stays
  * locked. Approve is the fingerprint (strong biometrics only), Deny answers no, 60 s and it expires. A code.ready asks
- * the same way ("Signing in to github.com"): the yes opens a 30 s window instead of sending a code. The same screen
+ * the same way ("Signing in to github.com"): the yes opens a 60 s window instead of sending a code. The same screen
  * sends a texted code to the waiting laptop (text mode) and copies a code on the phone itself (copy mode). Screenshots and the recents preview are blocked (FLAG_SECURE).
  */
 class ApproveActivity : ComponentActivity() {

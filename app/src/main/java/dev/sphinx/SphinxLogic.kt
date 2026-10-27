@@ -138,7 +138,8 @@ object SphinxLogic {
      * against an approval that never ends: a compromised laptop could otherwise pull codes for that site long after he
      * signed in. Enough to go from the password to the code field.
      */
-    const val WINDOW_MS = 30_000L
+    // 60 s since 2026-10-27 (30 before): Prevent's sign-in took 40 s from the password to the code field, so the window had closed.
+    const val WINDOW_MS = 60_000L
 
     fun envelope(kind: String, rid: String, body: Map<String, Any?>): Map<String, Any?> = mapOf("v" to V, "kind" to kind, "rid" to rid, "body" to body)
 
@@ -220,7 +221,7 @@ object SphinxLogic {
 
     /**
      * The window's codes for the laptop to hold, sealed like every reply (owner, 2026-10-26: "hold it and refresh if it
-     * expires", "hold only for 30 seconds"): each with the unix seconds it is good from and until, the last cut at the
+     * expires", "hold only for 30 seconds", 60 since 2026-10-27): each with the unix seconds it is good from and until, the last cut at the
      * window's end, so the code field fills with no trip to the phone. The laptop keeps them in memory only.
      */
     fun held(a: CodeAccount, times: List<Long>, codes: List<String>, now: Long, only: Boolean = false): Map<String, Any?> {

@@ -221,13 +221,14 @@ class LogicTest {
     @Test fun anApprovedReadyHandsTheLaptopTheWindowsCodesCutAtItsEnd() {
         accounts("GitHub" to "alex-work")
         val a = store.accounts().single()
-        val at = 1_000_000_040_000L   // 20 s into a 30 s period (1_000_000_020 starts one): the window spans this period and the next
+        val at = 1_000_000_040_000L   // 20 s into a 30 s period (1_000_000_020 starts one): the 60 s window spans this period and the next two
         val times = SphinxLogic.windowTimes(at, a.period)
         val held = SphinxLogic.held(a, times, listOf("111111", "222222", "222222").take(times.size), at)
         @Suppress("UNCHECKED_CAST") val codes = held["codes"] as List<Map<String, Any?>>
-        assertEquals(listOf("111111", "222222"), codes.map { it["code"] })
+        assertEquals(listOf("111111", "222222", "222222"), codes.map { it["code"] })
         assertEquals(1_000_000_020L, codes[0]["from"]); assertEquals(1_000_000_050L, codes[0]["until"])
-        assertEquals(1_000_000_050L, codes[1]["from"]); assertEquals(1_000_000_070L, codes[1]["until"])   // the window's end, not the period's
+        assertEquals(1_000_000_050L, codes[1]["from"]); assertEquals(1_000_000_080L, codes[1]["until"])
+        assertEquals(1_000_000_080L, codes[2]["from"]); assertEquals(1_000_000_100L, codes[2]["until"])   // the window's end, not the period's
         assertEquals(true, (SphinxLogic.readied("r".repeat(22), true, held = held)["body"] as Map<*, *>)["ok"])
     }
 
@@ -235,8 +236,8 @@ class LogicTest {
         accounts("GitHub" to "alex-work")
         val r = ask("code.ready", 'Y', "github.com", 1)
         assertTrue(r.ready)
-        assertEquals("Signing in to github.com (alex-work): approve the code for 30 s?", SphinxLogic.question(r))
-        assertEquals("Signing in to github.com (GitHub): approve the code for 30 s?", SphinxLogic.question(r, names = false))
+        assertEquals("Signing in to github.com (alex-work): approve the code for 60 s?", SphinxLogic.question(r))
+        assertEquals("Signing in to github.com (GitHub): approve the code for 60 s?", SphinxLogic.question(r, names = false))
         for (body in listOf(SphinxLogic.readied(r.rid, true), SphinxLogic.no(r, "denied"), SphinxLogic.no(r, "expired"))) {
             assertEquals("code.ready.reply", body["kind"])
             assertFalse((body["body"] as Map<*, *>).containsKey("code"))
@@ -270,8 +271,8 @@ class LogicTest {
         accounts("GitHub" to "alex-work", "GitLab" to "alex")
         val w = approve(ask("code.ready", 'Y', "github.com", 1))
         val req = ask("code.request", 'R', "github.com", 2)
-        assertTrue(SphinxLogic.served(w, req, now + 29_999) != null)
-        assertNull(SphinxLogic.served(w, req, now + 30_000))
+        assertTrue(SphinxLogic.served(w, req, now + 59_999) != null)
+        assertNull(SphinxLogic.served(w, req, now + 60_000))
         assertNull(SphinxLogic.served(w, ask("code.request", 'S', "gitlab.com", 3), now + 1_000))
         assertNull(SphinxLogic.served(w, req.copy(pid = "Q".repeat(22)), now + 1_000))
         // The page named another account than the one he approved.
@@ -298,10 +299,10 @@ class LogicTest {
         assertEquals(emptyList<Pending>(), SphinxLogic.supersedes(listOf(ready), ask("code.ready", 'U', "github.com", 5), now))
     }
 
-    @Test fun theWindowIsThirtySecondsAndItsCodesCoverEveryPeriodItTouches() {
-        assertEquals(30_000L, SphinxLogic.WINDOW_MS)
+    @Test fun theWindowIsSixtySecondsAndItsCodesCoverEveryPeriodItTouches() {
+        assertEquals(60_000L, SphinxLogic.WINDOW_MS)
         val t = 1_800_000_029_000L
-        assertEquals(listOf(t, t + 30_000), SphinxLogic.windowTimes(t, 30))
+        assertEquals(listOf(t, t + 30_000, t + 60_000), SphinxLogic.windowTimes(t, 30))
     }
 
     @Test fun theCopyScreenNamesOnlyTheIssuerOverTheKeyguard() {
