@@ -436,6 +436,11 @@ async function delivered(s, rid, env) {
 
 async function content(m, s) {
   switch (m.t) {
+    case "seen": {
+      // The page script found a code field and did not ask on sight: why, as flags (never page content).
+      T("ask skipped", `busy=${m.busy === true} filled=${m.filled === true} askedHere=${m.autoDone === true} fields=${Number.isInteger(m.fields) ? m.fields : "?"}`);
+      return { ok: true };
+    }
     case "eligible": {
       const ok = !!(await eligible(s));
       // A page loaded here (its own dot: green when the site is saved); for a saved site the phone's state is brought up
@@ -481,7 +486,7 @@ async function content(m, s) {
     }
     case "ask": {
       // The trace: how long the page script had the field before it asked (a number from the page, bounded).
-      if (Number.isFinite(m.seen)) T("field seen", `${Math.max(0, Math.min(600000, Math.round(Date.now() - m.seen)))} ms before this ask`);
+      if (Number.isFinite(m.seen)) T("field seen", `${Math.max(0, Math.min(600000, Math.round(Date.now() - m.seen)))} ms before this ask (${m.trigger === "focus" ? "his click" : "on sight"})`);
       const e = await eligible(s);
       if (!e) return { ok: false, why: "not a saved site" };
       let user = typeof m.user === "string" ? m.user.slice(0, 120) : "";

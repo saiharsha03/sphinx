@@ -108,10 +108,10 @@
   const may = (trigger, t) => D.shouldAsk({ trigger, busy, filled, autoDone: auto.has(location.href), ended,
     sinceFill: filled ? Date.now() - filledAt : Infinity, fieldEmpty: !t || !t.fields.some((f) => f.value) });
 
-  async function go(target) {
+  async function go(target, trigger) {
     busy = true;
     filled = false;
-    try { ended = await ask(target); } finally { busy = false; }
+    try { ended = await ask(target, trigger); } finally { busy = false; }
   }
 
   /** The code goes in; his fingerprint was the yes, so the form is sent on too, except a texted code (typed in only). */
@@ -136,13 +136,13 @@
   }
 
   /** One request: returns why it ended without a code ("expired", "denied", "no answer", ...), or null once filled. */
-  async function ask(target) {
+  async function ask(target, trigger) {
     const at = target.fields[0];
     // The code page often doesn't show who is signing in (GitHub's doesn't): fall back to the user name he typed on this
     // site's sign-in page in this tab, so the phone picks between his two accounts itself (the owner, 2026-10-23).
     const user = D.userHint([...document.querySelectorAll("input")].map(desc), document.body?.innerText || "") || remembered();
     // When the field was first seen, for the worker's timing trace (the gap from seen to asked).
-    const r = await send({ t: "ask", user, seen: seenAt });
+    const r = await send({ t: "ask", user, seen: seenAt, trigger });
     if (!r?.ok) return "error";
     if (r.code) return done(target, at, { code: r.code, account: r.account });
     say(at, "Sphinx: answer on your phone", true);
@@ -161,7 +161,7 @@
     return "no answer";
   }
 
-  let seenAt = 0;
+  let seenAt = 0, skipped = false;
   async function scan() {
     const target = find();
     if (!target) return;
@@ -172,10 +172,12 @@
     // A click counts too: after a fill the field keeps focus, so clicking it again fires no focus event.
     // Only his real gesture (isTrusted): a page script calling focus() or click() in a loop can't flood his phone with
     // fingerprint prompts (security review 2026-10-26).
-    const again = (e) => { const t = find() || target; if (e.isTrusted && !quiet && may("focus", t)) go(t); };
+    const again = (e) => { const t = find() || target; if (e.isTrusted && !quiet && may("focus", t)) go(t, "focus"); };
     target.fields.filter((el) => !armed.has(el)).forEach((el) => { armed.add(el); el.addEventListener("focus", again); el.addEventListener("click", again); });
     // And as soon as the field is there, once per page (the owner, 2026-10-25): the phone asks while he reaches for it.
-    if (may("seen")) { auto.add(location.href); go(target); }
+    if (may("seen")) { auto.add(location.href); go(target, "seen"); }
+    // Refused on sight: the worker's trace gets the gate's flags once (2026-10-27: a field stood 8 s before his click asked).
+    else if (!skipped) { skipped = true; send({ t: "seen", busy, filled, autoDone: auto.has(location.href), fields: target.fields.length }); }
   }
 
   // The sign-in has started (owner, 2026-10-26: "prefetch the code ... when password is being entered or autofilled"):
