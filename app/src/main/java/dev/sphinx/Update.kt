@@ -224,18 +224,18 @@ object Update {
                     RelayClient.appFile(p, Capped(out, r.size.toLong()) { n ->
                         if (cancelled || System.currentTimeMillis() - started > DEADLINE_MS) throw Stopped()
                         if (n - last >= STEP || n == r.size.toLong()) { last = n; set(UpdateState.Downloading(r, n)) }
-                    })
+                    }, onOpen = { c -> live = c; if (cancelled) c.disconnect() })
                 }
             } catch (e: Exception) {
                 file.delete()
                 Log.warn("update download failed", e.javaClass.simpleName)
-                set(UpdateState.Failed(r, when (e) {
-                    is Capped.TooBig -> "The download is bigger than the release says."
-                    is Stopped -> "The download took too long and was stopped. Try again."
+                set(UpdateState.Failed(r, when {
+                    e is Capped.TooBig -> "The download is bigger than the release says."
+                    e is Stopped || cancelled -> "The download took too long and was stopped. Try again."
                     else -> "The download failed (${e.javaClass.simpleName}). Try again."
                 }))
                 return
-            }
+            } finally { live = null }
             val why = runCatching { UpdateRules.verified(r, archive(app), file.length(), sha256(file), read(app, file)) }
                 .getOrElse { "The download couldn't be checked (${it.javaClass.simpleName})." }
             if (why != null) {
@@ -256,11 +256,13 @@ object Update {
 
     /** Set by [cancel]: the next bytes written throw, the download fails and its thread ends. */
     @Volatile private var cancelled = false
+    /** The download's connection while it is open: [cancel] disconnects it, so a blocked read ends at once (Codex, 2026-10-27). */
+    @Volatile private var live: java.net.HttpURLConnection? = null
     /** A download longer than this is given up (Android 15 ends a dataSync service at 6 h anyway). */
     private const val DEADLINE_MS = 30L * 60 * 1000
 
     /** Stops a download under way (the service's timeout, Codex 2026-10-27): it ends as a failure that says why. */
-    fun cancel() { cancelled = true }
+    fun cancel() { cancelled = true; runCatching { live?.disconnect() } }
 
     /** Whether a download or install is running. */
     fun busy(): Boolean = installing.get()
@@ -272,24 +274,25 @@ object Update {
     @Volatile var front = false
 
     /** The release whose installer opened by itself: once per download, or a cancelled install would reopen it on every return. */
-    @Volatile private var opened = 0L
+    private val opened = java.util.concurrent.atomic.AtomicLong(0L)
 
     /** The app back in front with a checked file waiting: the installer opens now (the tap on the notification lands here). */
     fun resume(c: Context) {
         val app = c.applicationContext
         val s = _state.value as? UpdateState.Ready ?: return
-        if (opened == s.release.versionCode) return
+        if (opened.get() == s.release.versionCode) return
         val file = File(s.path)
         // Checked again (hash and parse, off the main thread: Codex, 2026-10-27) before it goes to the installer: the
         // cache sat there while the app was off screen. Only if the app is still in front with that file waiting.
         Thread {
             if (!checks(app, s.release, file)) { file.delete(); _state.compareAndSet(s, UpdateState.Available(s.release)); return@Thread }
-            if (front && _state.value === s && opened != s.release.versionCode) openInstaller(app, s.release, file) { _state.value = it }
+            // The claim is atomic: two returns at once (Codex, 2026-10-27) open one installer, not two.
+            if (front && _state.value === s && opened.getAndSet(s.release.versionCode) != s.release.versionCode) openInstaller(app, s.release, file) { _state.value = it }
         }.start()
     }
 
     private fun openInstaller(app: Context, r: AppRelease, file: File, set: (UpdateState) -> Unit) {
-        opened = r.versionCode
+        opened.set(r.versionCode)
         app.getSystemService(NotificationManager::class.java)?.cancel(NOTE_READY)
         val uri = FileProvider.getUriForFile(app, "${app.packageName}.files", file)
         val i = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")

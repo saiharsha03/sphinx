@@ -81,9 +81,10 @@ object RelayClient {
         } finally { c.disconnect() }
     }
 
-    /** A GET whose body is streamed into [sink] as it arrives (the app's APK), never held in memory. */
-    private fun stream(base: String, path: String, headers: Map<String, String>, sink: OutputStream, readMs: Int) {
+    /** A GET whose body is streamed into [sink] as it arrives (the app's APK), never held in memory; [onOpen] gets the connection (to disconnect it from elsewhere). */
+    private fun stream(base: String, path: String, headers: Map<String, String>, sink: OutputStream, readMs: Int, onOpen: (HttpURLConnection) -> Unit = {}) {
         val c = open(base, "GET", path, null, headers, readMs)
+        onOpen(c)
         try { c.inputStream.use { it.copyTo(sink) } } finally { c.disconnect() }
     }
 
@@ -140,9 +141,9 @@ object RelayClient {
     fun app(p: Pairing): String? = try { signed(p, "GET", "/v1/app", null) } catch (e: Failed) { if (e.status == 404) null else throw e }
 
     /** The release's APK, streamed into [sink] (signed like every call; a long read timeout for the file). */
-    fun appFile(p: Pairing, sink: OutputStream) {
+    fun appFile(p: Pairing, sink: OutputStream, onOpen: (HttpURLConnection) -> Unit = {}) {
         val path = "/v1/app/file"
         val h = SphinxCrypto.signed(p.relayKey, p.pid, "GET", URL(p.relay + path).path, "", ByteArray(0), System.currentTimeMillis())
-        stream(p.relay, path, h, sink, readMs = 120_000)
+        stream(p.relay, path, h, sink, readMs = 120_000, onOpen = onOpen)
     }
 }

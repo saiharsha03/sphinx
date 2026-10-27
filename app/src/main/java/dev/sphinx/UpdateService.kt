@@ -6,7 +6,9 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 
 /**
@@ -45,16 +47,18 @@ class UpdateService : Service() {
                     if (s is UpdateState.Downloading && s.percent != shown) { shown = s.percent; runCatching { nm.notify(Update.NOTE_DOWNLOAD, note(s.percent, false)) } }
                 }
             }.onFailure { Log.warn("update failed", it.javaClass.simpleName); Update.fail(r, "The update failed (${it.javaClass.simpleName}).") }
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            working = false
-            stopSelf()
+            // Cleanup on the main thread, where starts arrive: no start slips in between the flag and the stop (Codex, 2026-10-27).
+            Handler(Looper.getMainLooper()).post { working = false; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
         }.start()
         return START_NOT_STICKY
     }
 
-    /** Android 15 ends a dataSync service after its allowance: the download stops as a failure before that. */
+    /** Android 15 ends a dataSync service after its allowance: the connection is cut and the service stops at once (the worker ends as a failure). */
     override fun onTimeout(startId: Int, fgsType: Int) {
         Log.warn("update download timed out")
         Update.cancel()
+        working = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 }
