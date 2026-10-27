@@ -88,9 +88,15 @@ class ApproveActivity : ComponentActivity() {
         var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
         // Over the keyguard only the issuer shows, never the account names, until the fingerprint.
         val names = !locked()
+        // The request this screen showed went elsewhere (answered from the banner, or a code request took its place):
+        // the screen goes with it. Opened for one already gone, it says so instead.
+        val shown = remember { mutableStateOf(false) }
         LaunchedEffect(p) {
-            while (p != null && now < p.expires) { delay(500); now = System.currentTimeMillis() }
-            if (p != null) { withContext(Dispatchers.IO) { Sphinx.expire(applicationContext) }; finish() }
+            if (p == null) { if (shown.value) finish(); return@LaunchedEffect }
+            shown.value = true
+            while (now < p.expires) { delay(500); now = System.currentTimeMillis() }
+            withContext(Dispatchers.IO) { Sphinx.expire(applicationContext) }
+            finish()
         }
         if (p == null) {
             ApproveContent(null, 0, note ?: "This request has expired or was answered.", names, onApprove = {}, onDeny = { finish() })

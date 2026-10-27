@@ -288,12 +288,14 @@ class LogicTest {
         assertEquals(Totp.code(secret, now + 2_000), SphinxLogic.served(w, ask("code.request", 'R', "us-east-1.signin.aws.amazon.com", 2), now + 2_000)?.second)
     }
 
-    @Test fun aCodeRequestRidesItsSitesWaitingReadyOnly() {
+    // 2026-10-27: a code request no longer waits behind an unanswered pre-approval (up to 60 s); it takes its place.
+    @Test fun aCodeRequestTakesThePlaceOfItsSitesUnansweredPreApprovalOnly() {
         accounts("GitHub" to "alex-work", "GitLab" to "alex")
         val ready = ask("code.ready", 'Y', "github.com", 1)
-        assertTrue(SphinxLogic.rides(listOf(ready), ask("code.request", 'R', "github.com", 2), now))
-        assertFalse(SphinxLogic.rides(listOf(ready), ask("code.request", 'S', "gitlab.com", 3), now))
-        assertFalse(SphinxLogic.rides(listOf(ready), ask("code.request", 'T', "github.com", 4), ready.expires))
+        assertEquals(listOf(ready), SphinxLogic.supersedes(listOf(ready), ask("code.request", 'R', "github.com", 2), now))
+        assertEquals(emptyList<Pending>(), SphinxLogic.supersedes(listOf(ready), ask("code.request", 'S', "gitlab.com", 3), now))
+        assertEquals(emptyList<Pending>(), SphinxLogic.supersedes(listOf(ready), ask("code.request", 'T', "github.com", 4), ready.expires))
+        assertEquals(emptyList<Pending>(), SphinxLogic.supersedes(listOf(ready), ask("code.ready", 'U', "github.com", 5), now))
     }
 
     @Test fun theWindowIsThirtySecondsAndItsCodesCoverEveryPeriodItTouches() {
@@ -439,7 +441,7 @@ class LogicTest {
         val gone = old.copy(rid = "C".repeat(22), expires = now - 1)
         assertEquals(new.rid, SphinxLogic.forText(listOf(old, new, gone), now)?.rid)
         assertNull(SphinxLogic.forText(listOf(gone), now))                        // no fresh request: nothing is offered
-        // A pre-approval takes no code: a texted one never goes to it (its riders would be left waiting).
+        // A pre-approval takes no code: a texted one never goes to it (a code request for its site would be left waiting).
         assertEquals(old.rid, SphinxLogic.forText(listOf(old, new.copy(ready = true)), now)?.rid)
         assertNull(SphinxLogic.forText(listOf(new.copy(ready = true)), now))
     }

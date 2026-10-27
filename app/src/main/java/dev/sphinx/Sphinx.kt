@@ -94,11 +94,11 @@ object Sphinx {
                 // A texted-code site: nothing to approve yet; it waits for an SMS or email code ([notification]).
                 if (d.pending.textOnly)
                     Log.info("request from ${d.pending.host}", "waits for a texted one")
-                // Its site's pre-approval is on the screen: it waits on that answer (one prompt, not two).
-                else if (SphinxLogic.rides(pending.values, d.pending, System.currentTimeMillis())) {
-                    riders += d.pending.waitId
-                    Log.info("request from ${d.pending.host}", "waits on the pre-approval")
-                } else {
+                else {
+                    // Its site's pre-approval is still on the screen, unanswered: this code request takes its place
+                    // (that prompt goes, its laptop told "superseded") and asks at once. Until 2026-10-27 it waited
+                    // behind the pre-approval until that ran out, up to 60 s: the delay the owner saw.
+                    supersede(c, d.pending)
                     Log.info((if (d.pending.ready) "pre-approval from " else "request from ") + d.pending.host, "${d.pending.accounts.size} account(s)")
                     ask(c, d.pending)
                     asked()
@@ -146,9 +146,8 @@ object Sphinx {
             window.open(SphinxLogic.prime(p, a, codes, now))
             send(c, p.pid, rid, SphinxLogic.readied(rid, true, held = SphinxLogic.held(a, times, codes, now, only = p.accounts.size == 1)))
             Log.info("pre-approval from ${p.host}: approved", a.issuer.take(40))
-            // A code request that came while this one was on screen gets its code now; any other that waited on it, a prompt.
-            pending.values.filter { !it.ready }.sortedBy { it.expires }.firstOrNull { serve(c, it) }?.let { pending.remove(it.waitId); riders.remove(it.waitId); publish() }
-            unride(c)
+            // A code request for this site still waiting gets its code now.
+            pending.values.filter { !it.ready }.sortedBy { it.expires }.firstOrNull { serve(c, it) }?.let { pending.remove(it.waitId); publish() }
             return true
         }
         val code = SphinxStore.get(c).code(a, u, now)
@@ -169,19 +168,16 @@ object Sphinx {
         publish(); cancelAsk(c); dropText(c, id)
         runCatching { send(c, p.pid, p.rid, SphinxLogic.no(p, "denied")) }.onFailure { Log.warn("denial not sent", it.javaClass.simpleName) }
         Log.info((if (p.ready) "pre-approval from " else "request from ") + "${p.host}: denied")
-        if (p.ready) unride(c)
     }
 
     /** Requests past their 60 s: dropped, logged, and the laptop told (it stops waiting). */
     fun expire(c: Context) {
         val now = System.currentTimeMillis()
-        var ready = false
         for (p in pending.values.filter { it.expires <= now }) {
             pending.remove(p.waitId)
             dropText(c, p.waitId)
             runCatching { send(c, p.pid, p.rid, SphinxLogic.no(p, "expired")) }
             Log.info((if (p.ready) "pre-approval from " else "request from ") + "${p.host}: expired")
-            ready = ready || p.ready
         }
         for (a in signs.values.filter { it.expires <= now }) {
             signs.remove(a.waitId)
@@ -192,7 +188,6 @@ object Sphinx {
         if (signs.isEmpty()) cancelSign(c)
         window.close(now)
         publish()
-        if (ready) unride(c)
         if (pending.isEmpty()) cancelAsk(c)
     }
 
@@ -209,20 +204,16 @@ object Sphinx {
         return true
     }
 
-    /** A pre-approval ended without a yes: code requests that waited on it get the usual prompt. */
-    private fun unride(c: Context) {
-        val now = System.currentTimeMillis()
-        for (id in riders.toList()) {
-            val r = pending(id)
-            if (r == null) { riders.remove(id); continue }
-            if (SphinxLogic.rides(pending.values, r, now)) continue
-            riders.remove(id)
-            ask(c, r)
+    /** The site's pre-approvals still unanswered when code request [r] arrives go, each laptop told "superseded". */
+    private fun supersede(c: Context, r: Pending) {
+        val gone = SphinxLogic.supersedes(pending.values, r, System.currentTimeMillis())
+        for (p in gone) {
+            pending.remove(p.waitId)
+            runCatching { send(c, p.pid, p.rid, SphinxLogic.no(p, "superseded")) }
+            Log.info("pre-approval from ${p.host}: superseded by the code request")
         }
+        if (gone.isNotEmpty()) publish()
     }
-
-    /** Code requests waiting on a pre-approval's answer (their waitIds only). */
-    private val riders = ConcurrentHashMap.newKeySet<String>()
 
     // ---- the prompt ----
 

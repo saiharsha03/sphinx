@@ -287,8 +287,10 @@ object SphinxLogic {
     }
 
     /** A code request that came while its site's pre-approval still waits for him: it waits on that answer, no second prompt. */
-    fun rides(pending: Collection<Pending>, r: Pending, now: Long): Boolean = !r.ready && !r.textOnly &&
-        pending.any { it.ready && it.expires > now && it.pid == r.pid && Domains.site(it.host) == Domains.site(r.host) }
+    /** The pre-approvals (code.ready) still unanswered that code request [r] takes the place of: its pairing's, for its site. */
+    fun supersedes(pending: Collection<Pending>, r: Pending, now: Long): List<Pending> =
+        if (r.ready || r.textOnly) emptyList()
+        else pending.filter { it.ready && it.expires > now && it.pid == r.pid && Domains.site(it.host) == Domains.site(r.host) }
 
     /**
      * A code made at [now]: [ttl] seconds left, and `until`, the unix second its period ends, so the laptop drops a code
@@ -305,7 +307,7 @@ object SphinxLogic {
 
     /**
      * The newest laptop code request still waiting at [now], for a texted code to answer (any site: he sees which one).
-     * Never a pre-approval (code.ready): it takes no code, and its riders would be left waiting (review 2026-10-27).
+     * Never a pre-approval (code.ready): it takes no code, and a code request for its site would be left waiting (review 2026-10-27).
      */
     fun forText(pending: Collection<Pending>, now: Long): Pending? = pending.filter { it.expires > now && !it.ready }.maxByOrNull { it.expires }
 
