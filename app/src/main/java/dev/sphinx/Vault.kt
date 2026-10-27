@@ -51,6 +51,21 @@ object Rsa {
     val OAEP = OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT)
 }
 
+/**
+ * A fresh proof that his strong fingerprint just authorised the codes key: a random value sealed to its public half,
+ * opened only by the cipher the prompt authorised (CryptoObject), so a hooked or faked prompt callback proves nothing.
+ * For the actions that send every secret somewhere (the relay backup, the recovery phrase, a Google restore).
+ */
+object Proof {
+    fun challenge(keys: BoxKeys): Pair<ByteArray, ByteArray> {
+        val n = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+        val c = Cipher.getInstance(Rsa.TRANSFORM).apply { init(Cipher.ENCRYPT_MODE, keys.publicKey(), Rsa.OAEP) }
+        return n to c.doFinal(n)
+    }
+
+    fun check(u: Unwrapper, ch: Pair<ByteArray, ByteArray>): Boolean = runCatching { java.security.MessageDigest.isEqual(u.unwrap(ch.second), ch.first) }.getOrDefault(false)
+}
+
 /** The Keystore cipher behind one code. BiometricPrompt authorises exactly this object. */
 class CipherUnwrapper(val cipher: Cipher) : Unwrapper {
     override fun unwrap(wrapped: ByteArray): ByteArray = cipher.doFinal(wrapped)

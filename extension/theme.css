@@ -1,0 +1,65 @@
+/* Sphinx's look, shared by the popup and the options page: the phone app's "basalt and jade" (black, white type, one
+   jade accent, tonal surfaces with 1px hairlines, the cartouche). Instrument Sans, IBM Plex Mono and Marcellus (the
+   wordmark only) are bundled under fonts/ (OFL). No glows, no gradients. */
+@font-face { font-family: "Instrument Sans"; font-weight: 400 600; src: url("fonts/InstrumentSans.ttf") format("truetype"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 500; src: url("fonts/IBMPlexMono-Medium.ttf") format("truetype"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 600; src: url("fonts/IBMPlexMono-SemiBold.ttf") format("truetype"); }
+@font-face { font-family: "Marcellus"; font-weight: 400; src: url("fonts/Marcellus-Regular.ttf") format("truetype"); }
+
+:root {
+  --page: #000000; --bg: #0a0a0a; --raised: #141414; --high: #1e1e1e;
+  --hair: rgba(255, 255, 255, .10); --hair-soft: rgba(255, 255, 255, .06);
+  --text: #f2f2f2; --text2: #8c8c8c; --jade: #7fd6aa; --onjade: #0a0a0a; --danger: #f05a45;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 400 15px/20px "Instrument Sans", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+
+/* the wordmark: the small silhouette (its jade eye blinks now and then) and the name in Marcellus */
+.wordmark { display: flex; align-items: center; font: 22px/24px Marcellus, serif; letter-spacing: .04em; }
+.mk { width: 40px; height: 15px; fill: #3a3a3a; margin-right: 6px; flex: none; }
+.mk .mk-eye { fill: var(--jade); animation: blinkeye 7s infinite; transform-origin: 129px 137px; }
+@keyframes blinkeye { 0%, 94%, 100% { transform: scaleY(1); } 97% { transform: scaleY(.1); } }
+
+.sub { color: var(--text2); font-size: 13px; line-height: 18px; margin: 2px 0 0; }
+.label { display: block; text-transform: uppercase; letter-spacing: .07em; font: 600 11px/14px "Instrument Sans", system-ui, sans-serif; color: var(--text2); margin: 0 4px 8px; }
+.label.danger { color: var(--danger); }
+section { margin-top: 20px; }
+.group { background: var(--raised); border: 1px solid var(--hair); border-radius: 16px; overflow: hidden; }
+.group.danger { border-color: rgba(240, 90, 69, .45); }
+.pad { padding: 13px 16px; }
+.pad + .pad { border-top: 1px solid var(--hair-soft); }
+.t { font-weight: 500; }
+.muted { color: var(--text2); font-size: 12.5px; line-height: 17px; margin: 0; }
+.problem { color: var(--danger); font-size: 12.5px; line-height: 17px; margin: 0; }
+.ok { color: var(--jade); }
+.mono { font-family: var(--mono); font-weight: 500; font-size: 12.5px; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--jade); flex: none; }
+.dot.off { background: var(--danger); }
+
+/* the cartouche: a pill outline with a short vertical bar near its right end */
+.cart { position: relative; display: inline-flex; align-items: center; max-width: 100%; border: 1px solid var(--hair); border-radius: 999px;
+  padding: 1px 14px 1px 8px; font-size: 12px; line-height: 16px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 2px 6px 2px 0; }
+.cart::after { content: ""; position: absolute; right: 5px; top: 4px; bottom: 4px; width: 1px; background: var(--hair); border-radius: 1px; }
+
+button { font: 600 15px/20px "Instrument Sans", system-ui, sans-serif; min-height: 44px; padding: 0 16px; border-radius: 12px; cursor: pointer; border: 1px solid transparent; }
+button:disabled { opacity: .4; cursor: default; }
+.primary { background: var(--jade); color: var(--onjade); }
+.primary:active { background: #6cbf96; }
+.secondary, .text { background: transparent; color: var(--text); border-color: var(--hair); }
+.secondary:active, .text:active { background: var(--high); }
+.danger { background: transparent; color: var(--danger); border-color: rgba(240, 90, 69, .5); }
+.danger:active { background: rgba(240, 90, 69, .12); }
+.wide { width: 100%; }
+input, textarea { font: 400 15px/20px "Instrument Sans", system-ui, sans-serif; color: var(--text); background: var(--raised); border: 1px solid var(--hair);
+  border-radius: 10px; padding: 11px 14px; width: 100%; }
+input::placeholder, textarea::placeholder { color: var(--text2); }
+input:focus, textarea:focus { outline: none; border-color: var(--jade); }
+textarea { min-height: 56px; resize: vertical; font-size: 13px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+a { color: var(--jade); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

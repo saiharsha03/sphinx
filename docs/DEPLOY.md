@@ -6,7 +6,7 @@ and a Caddy site for its own hostname with its own certificate. It shares nothin
 
 ## Before you start
 - A server with Caddy installed (its `caddy` group must exist) and Python 3.12.
-- A hostname whose DNS points at the server (a free `sphinx-<ip-with-dashes>.sslip.io` works).
+- A hostname whose DNS points at the server.
 - Your Firebase project's service account JSON (README, "Set it up", step 1). Optional, but without it there is no
   fast wake and the phone only hears about requests when Sphinx is opened.
 
@@ -39,16 +39,21 @@ It writes `/etc/caddy/sphinx.caddy` (your hostname and bind address filled in), 
 different listener and gets an empty 200. With no other sites, `0.0.0.0` (the default) is fine.
 
 ## The registration token
-`grep REGISTER /etc/sphinx/relay.env`. Pairing a laptop and creating a backup need it. Put it in the extension's options
-page (or `extension/local.json`), or build it into the app with `sphinx.relayTokenFile`.
+`grep REGISTER /etc/sphinx/relay.env`. The relay refuses to start without it (only `SPHINX_INSECURE_DEV=1`, for a
+local test relay, runs it open). Pairing a laptop and every backup route need it (a backup route also takes a paired
+phone's signature). Put it in the extension's options page (or `extension/local.json`), or build it into the app with
+`sphinx.relayTokenFile` (the app sends that built-in value only to the built-in relay's own address).
 
 ## Update
 `git -C /root/sphinx-src pull && bash /root/sphinx-src/deploy/install.sh && bash /root/sphinx-src/deploy/install-caddy.sh`
 (with the same `SPHINX_HOST`/`SPHINX_BIND`). The token and the Firebase account stay.
 
-## Unlock the backup
-After 25 wrong passcode or phrase tries in a row the relay refuses every backup open until you remove
-`/var/lib/sphinx/backup.locked`.
+## The backup lock
+After 25 wrong tries in a row at one slot the relay locks that slot (`/var/lib/sphinx/backup.<slot>.locked` appears,
+`backup.pass.locked` for the passcode's; restores and uploads of it get 423). Check who was guessing
+(`journalctl -u sphinx-relay | grep backup`), then unlock: `rm /var/lib/sphinx/backup.pass.locked` (a `backup.locked`
+left from an older relay locks every slot until removed). The backup itself lives in `/var/lib/sphinx/backup.json`
+(ciphertext only; whoever holds it can guess passcodes offline, so keep VPS backups of it as private as the VPS).
 
 ## Undo
 `systemctl disable --now sphinx-relay`, remove the `import /etc/caddy/sphinx.caddy` line and reload Caddy, then

@@ -164,6 +164,341 @@ class BackupTest {
         assertNull(BackupCrypto.openRecord(phrase.id, BackupCrypto.phraseKeys(Bip39.seed(Bip39.phrase(ByteArray(32) { 1 }))).key, atPhrase))
     }
 
+    @Test fun oneLocalBackupPerFolderAndAStopBetweenANewKeyAndItsStateStillOpens() {
+        val dir = File(tmp(), "backup")
+        assertTrue(LocalBackup.at(dir) === LocalBackup.at(File(dir.path)))
+        val l = LocalBackup(dir) { now }
+        l.start(BackupState(textSites = listOf("a.example")))
+        // A rotate that stopped after key.next and the state sealed with it, before key.bin moved: the state opens with key.next.
+        val next = BackupCrypto.newKey()
+        File(dir, "key.next").writeBytes(next)
+        l.stateFile.writeBytes(BackupCrypto.sealState(next, BackupState(textSites = listOf("b.example"))))
+        assertEquals(listOf("b.example"), l.read()!!.textSites)
+        assertArrayEquals(next, l.keyFile.readBytes())
+        assertFalse(File(dir, "key.next").exists())
+        // Many changes at once through the one instance: none is lost.
+        val shared = LocalBackup.at(File(tmp(), "backup")).apply { start() }
+        (1..8).map { i -> Thread { repeat(10) { j -> shared.update { it.copy(textSites = it.textSites + "s$i-$j.example") } } }.apply { start() } }.forEach { it.join() }
+        assertEquals(80, shared.read()!!.textSites.size)
+    }
+
+    @Test fun aFullKeysSafeFitsTheRelaysLimitAndOldRecordsStillOpen() {
+        val bk = BackupCrypto.newKey()
+        val safe = (0 until 16).map { BackupSafe("s$it", "file $it", "file", "f$it", "x/y", now, SphinxCrypto.enc(ByteArray(SafeStore.MAX_TOTAL / 16) { 1 })) }
+        val sealed = BackupCrypto.sealState(bk, BackupState(safe = safe))
+        val k = BackupCrypto.passKeys("copper lantern orbit meadow", ByteArray(16), fast)
+        val record = BackupCrypto.record("pass", k.key, bk, sealed)
+        assertTrue("${record.length}", record.length < 8_000_000)
+        assertArrayEquals(bk, BackupCrypto.openRecord("pass", k.key, record)!!.first)
+        // A v1 record (the same JSON, base64'd once more) still opens.
+        val v1 = SphinxCrypto.enc(json.writeValueAsBytes(mapOf("v" to 1, "wrapped" to json.readTree(record).path("wrapped").asText(), "state" to SphinxCrypto.enc(sealed))))
+        assertArrayEquals(bk, BackupCrypto.openRecord("pass", k.key, v1)!!.first)
+    }
+
+    @Test fun aRestoreTakesNoArgon2CostBelowOursAndNoShortSalt() {
+        val salt = ByteArray(16)
+        assertTrue(BackupCrypto.trusted(Kdf(), salt))
+        assertTrue(BackupCrypto.trusted(Kdf(m = 131072, t = 4), salt))
+        assertFalse(BackupCrypto.trusted(Kdf(m = 8192, t = 1), salt))
+        assertFalse(BackupCrypto.trusted(Kdf(m = 65536, t = 2), salt))
+        assertFalse(BackupCrypto.trusted(Kdf(m = 32768, t = 3), salt))
+        assertFalse(BackupCrypto.trusted(Kdf(), ByteArray(8)))
+        assertFalse(BackupCrypto.trusted(null, salt))
+    }
+
+    @Test fun changingThePasscodeNeedsTheCurrentOne() {
+        val salt = ByteArray(16) { 3 }
+        val k = BackupCrypto.passKeys("copper lantern orbit meadow", salt, fast)
+        val r = RelayBackup("https://relay.example.com", salt = SphinxCrypto.enc(salt), kdf = fast, passKey = SphinxCrypto.enc(k.key), passAuth = k.auth)
+        assertTrue(BackupCrypto.proves("copper lantern orbit meadow", r))
+        assertFalse(BackupCrypto.proves("copper lantern orbit meadoW", r))
+        assertFalse(BackupCrypto.proves("", r))
+    }
+
+    @Test fun aRestoreKeepsWhatThePhoneAlreadyHeld() {
+        val here = BackupState(accounts = listOf(BackupAccount("a1", "Here"), BackupAccount("a2", "Both")), safe = listOf(BackupSafe("k1", "here")), textSites = listOf("h.example"))
+        val back = BackupState(accounts = listOf(BackupAccount("a2", "Both, restored"), BackupAccount("a3", "Back")), safe = listOf(BackupSafe("k2", "back")),
+            textSites = listOf("b.example"), relay = RelayBackup("https://relay.example.com"))
+        val m = BackupCrypto.merged(back, here)
+        // On a duplicate id the entry already on the phone wins, as the stores keep it.
+        assertEquals(listOf("Here", "Both", "Back"), m.accounts.map { it.issuer })
+        assertEquals(setOf("k1", "k2"), m.safe.map { it.id }.toSet())
+        assertEquals(setOf("h.example", "b.example"), m.textSites.toSet())
+        assertEquals("https://relay.example.com", m.relay?.relay)
+        assertEquals(back, BackupCrypto.merged(back, null))
+    }
+
+    private fun relayOn(l: LocalBackup, phrase: Boolean = true): RelayBackup {
+        val k = BackupCrypto.passKeys("copper lantern orbit meadow", ByteArray(16), fast)
+        val r = RelayBackup("https://relay.example.com", "", SphinxCrypto.enc(ByteArray(16)), fast, SphinxCrypto.enc(k.key), k.auth,
+            if (phrase) "P".repeat(43) else "", if (phrase) SphinxCrypto.enc(ByteArray(32) { 4 }) else "", if (phrase) "A".repeat(43) else "")
+        l.update { it.copy(relay = r) }
+        return r
+    }
+
+    @Test fun turningOffSaysSoWhenTheRelayKeptItsCopy() {
+        val l = LocalBackup(File(tmp(), "backup")) { now }.apply { start() }
+        relayOn(l)
+        val asked = ArrayList<String>()
+        val e = runCatching { Backups.turnOff(l) { _, slot, _ -> asked += slot; if (slot == "pass") throw RelayClient.Failed(503) } }.exceptionOrNull()
+        assertTrue(e?.message.orEmpty(), e?.message.orEmpty().contains("couldn't be deleted"))
+        assertEquals(listOf("pass", "P".repeat(43)), asked)
+        assertNull(l.read()!!.relay)
+        // Both deletes taken: no complaint.
+        relayOn(l)
+        Backups.turnOff(l) { _, _, _ -> }
+        assertNull(l.read()!!.relay)
+    }
+
+    @Test fun aSnapshotIsOneConsistentPairAndAMoveDeletesTheOldRelaysSlots() {
+        val l = LocalBackup(File(tmp(), "backup")) { now }.apply { start(BackupState(textSites = listOf("a.example"))) }
+        val (bk, s, sealed) = l.snapshot()!!
+        assertEquals(s, BackupCrypto.openState(bk, sealed)!!.copy(at = s.at))
+        // A rotation after it doesn't change the pair it gave; the next snapshot is the new pair.
+        l.rotate()
+        val (bk2, _, sealed2) = l.snapshot()!!
+        assertFalse(bk2.contentEquals(bk))
+        assertNotNull(BackupCrypto.openState(bk2, sealed2))
+        assertNull(BackupCrypto.openState(bk, sealed2))
+        // The upload sends what one snapshot holds: its record opens with that BK to that state.
+        val r = relayOn(l, phrase = false)
+        var body: Map<String, Any?>? = null
+        Backups.upload(l) { _, _, b -> body = b }
+        val (k3, st3) = BackupCrypto.openRecord("pass", SphinxCrypto.dec(r.passKey)!!, body!!["blob"] as String)!!
+        assertNotNull(BackupCrypto.openState(k3, st3))
+        // Moving to another relay: both of the old relay's slots are deleted; a failure is returned to be said.
+        val asked = ArrayList<String>()
+        assertNull(Backups.dropSlots(r.copy(phraseId = "P".repeat(43))) { _, slot, _ -> asked += slot })
+        assertEquals(listOf("pass", "P".repeat(43)), asked)
+        assertTrue(Backups.dropSlots(r) { _, _, _ -> throw RelayClient.Failed(503) } is RelayClient.Failed)
+    }
+
+    @Test fun anUploadNeverCreatesASlotAndAPhraseGoneFromTheRelayIsOffHereToo() {
+        val l = LocalBackup(File(tmp(), "backup")) { now }.apply { start() }
+        relayOn(l)
+        val puts = ArrayList<Pair<String, Map<String, Any?>>>()
+        Backups.upload(l) { _, slot, body -> puts += slot to body; if (slot != "pass") throw RelayClient.Failed(404) }
+        assertTrue(puts.all { it.second["create"] == false })
+        // The phrase slot was gone: off here, and the passcode's copy sent again without it.
+        assertEquals(listOf("pass", "P".repeat(43), "pass"), puts.map { it.first })
+        assertEquals("", l.read()!!.relay!!.phraseId)
+        // Any other failure is passed on (the worker retries).
+        relayOn(l)
+        assertTrue(runCatching { Backups.upload(l) { _, slot, _ -> if (slot != "pass") throw RelayClient.Failed(503) } }.isFailure)
+        assertEquals("P".repeat(43), l.read()!!.relay!!.phraseId)
+    }
+
+    @Test fun aNewFingerprintSetsTheBackupAsideAndOnlyItsPasscodeOrPhraseReopensIt() {
+        val dir = File(tmp(), "backup")
+        val l = LocalBackup(dir) { now }
+        val salt = ByteArray(16) { 7 }
+        val k = BackupCrypto.passKeys("copper lantern orbit meadow", salt, fast)
+        val words = Bip39.phrase(ByteArray(32) { 3 })
+        val ph = BackupCrypto.phraseKeys(Bip39.seed(words))
+        val r = RelayBackup("https://relay.example.com", "", SphinxCrypto.enc(salt), fast, SphinxCrypto.enc(k.key), k.auth, ph.id, SphinxCrypto.enc(ph.key), ph.auth)
+        l.start(BackupState(accounts = listOf(BackupAccount("a1", "GitHub", secret = "c2VjcmV0")), relay = r))
+        assertTrue(l.stash(LocalBackup.CLEARED))
+        l.start()
+        assertEquals(LocalBackup.CLEARED, l.foreignWhy())
+        assertTrue(l.read()!!.accounts.isEmpty())                       // nothing of it in the backup this phone keeps now
+        val s = l.foreign()!!.second
+        assertTrue(BackupCrypto.opens(s, "copper lantern orbit meadow", null))
+        assertTrue(BackupCrypto.opens(s, null, words))
+        assertFalse(BackupCrypto.opens(s, "not the passcode at all", null))
+        assertFalse(BackupCrypto.opens(s, null, Bip39.phrase(ByteArray(32) { 4 })))
+        assertFalse(BackupCrypto.opens(s.copy(relay = null), "copper lantern orbit meadow", null))
+        // The fingerprint path (Backups.adopt) refuses it; Google's is the default reason.
+        val src = File("src/main/java/dev/sphinx/Backups.kt").readText()
+        assertTrue(src.contains("if (a.why == LocalBackup.CLEARED) error("))
+        val sphinx = File("src/main/java/dev/sphinx/Sphinx.kt").readText().substringAfter("catch (e: SphinxStore.Cleared)").substringBefore("catch (e: Exception)")
+        assertTrue(sphinx.contains("Backups.retire(c)"))
+        // A relay restore joins this phone's secrets to the backup it brings: only after a codes-key fingerprint.
+        val restore = File("src/main/java/dev/sphinx/SafeScreens.kt").readText().substringAfter("fun RestorePane")
+        assertTrue(restore.substringBefore("Backups.restore(").contains("Sphinx.confirm("))
+        val g = LocalBackup(File(tmp(), "backup")) { now }.apply { start(BackupState(accounts = listOf(BackupAccount("a2")))) }
+        g.stash()
+        assertEquals(LocalBackup.GOOGLE, g.foreignWhy())
+    }
+
+    @Test fun aStashAStopInterruptedIsFinishedBeforeAnythingReplacesIt() {
+        val dir = File(tmp(), "backup")
+        val l = LocalBackup(dir) { now }
+        l.start(BackupState(accounts = listOf(BackupAccount("a1", "GitHub", secret = "c2VjcmV0"))))
+        val theirs = l.key()!!
+        // Codex's case: the state moved, then a stop before the key; the next start must not write a new key over it.
+        val aside = File(dir, "restored").apply { mkdirs() }
+        File(aside, "why").writeText(LocalBackup.GOOGLE); File(aside, "moving").writeText(LocalBackup.GOOGLE)
+        java.nio.file.Files.move(l.stateFile.toPath(), File(aside, "state.bin").toPath())
+        assertNull(l.foreign())                                          // half moved: not opened
+        assertTrue(l.finishStash())
+        assertArrayEquals(theirs, l.foreign()!!.first)
+        assertFalse(l.keyFile.exists())
+        l.start()
+        assertArrayEquals(theirs, l.foreign()!!.first)                  // the new backup didn't touch it
+        assertFalse(l.finishStash())
+        // A set-aside backup whose live key was still in key.next opens with it.
+        val m = LocalBackup(File(tmp(), "backup")) { now }.apply { start() }
+        val next = BackupCrypto.newKey()
+        File(File(tmp(), "x"), "").mkdirs()
+        val d2 = m.stateFile.parentFile!!
+        File(d2, "key.next").writeBytes(next)
+        m.stateFile.writeBytes(BackupCrypto.sealState(next, BackupState(textSites = listOf("n.example"))))
+        assertTrue(m.stash())
+        assertEquals(listOf("n.example"), m.foreign()!!.second.textSites)
+    }
+
+    @Test fun aRetireStoppedAtAnyStepIsFinishedAndNothingUploadsBefore() {
+        val salt = ByteArray(16)
+        val k = BackupCrypto.passKeys("copper lantern orbit meadow", salt, fast)
+        val relay = RelayBackup("https://relay.example.com", "", SphinxCrypto.enc(salt), fast, SphinxCrypto.enc(k.key), k.auth)
+        fun old(dir: File) = LocalBackup(dir) { now }.apply { start(BackupState(accounts = listOf(BackupAccount("a1", "GitHub", secret = "c2VjcmV0")), relay = relay)) }
+        // Stopped right after the marker (before the stash): the old backup is set aside, not uploaded.
+        val a = old(File(tmp(), "backup")).apply { markRetire() }
+        var puts = 0
+        Backups.upload(a) { _, _, _ -> puts++ }
+        assertEquals(0, puts)
+        assertEquals(LocalBackup.CLEARED, a.foreignWhy())
+        assertTrue(a.read()!!.accounts.isEmpty() && a.read()!!.relay == null)
+        assertFalse(a.retirePending())
+        // Stopped after the stash, before the new backup: it starts one, with no second set-aside copy.
+        val dirB = File(tmp(), "backup")
+        val b = old(dirB).apply { markRetire() }
+        assertTrue(b.stash(LocalBackup.CLEARED))
+        File(dirB, "retire.pending").writeText("stashed")
+        assertTrue(b.retire())
+        assertTrue(b.exists() && b.read()!!.accounts.isEmpty())
+        assertEquals(1, dirB.listFiles { f -> f.name.startsWith("restored") }!!.size)
+        // Stopped after the new backup, before the marker went: nothing more is stashed.
+        File(dirB, "retire.pending").writeText("stashed")
+        assertTrue(b.retire())
+        assertEquals(1, dirB.listFiles { f -> f.name.startsWith("restored") }!!.size)
+        // A retire over an empty backup sets nothing aside.
+        val dirC = File(tmp(), "backup")
+        val c = LocalBackup(dirC) { now }.apply { start(); markRetire() }
+        assertTrue(c.retire())
+        assertNull(c.foreignWhy())
+        // Every path that sends or merges the backup goes through the same check first.
+        val src = File("src/main/java/dev/sphinx/Backups.kt").readText()
+        for (f in listOf("fun setUp(", "fun phraseOn(", "fun restore(", "internal fun upload(", "fun adopt(", "fun adoptWith("))
+            assertTrue(f, src.substringAfter(f).substringBefore("\n    }").contains("ready("))
+    }
+
+    @Test fun anOpenAndADeleteThatOverlapTouchOnlyTheCopyTheyNamed() {
+        // Codex round 4: copy A is opened; while that runs he deletes A; the open's cleanup must not then delete B.
+        val dir = File(tmp(), "backup")
+        val l = LocalBackup(dir) { now }
+        l.start(BackupState(accounts = listOf(BackupAccount("a", "A", secret = "c2VjcmV0"))))
+        assertTrue(l.stash())
+        l.start(BackupState(accounts = listOf(BackupAccount("b", "B", secret = "c2VjcmV0"))))
+        assertTrue(l.stash(LocalBackup.CLEARED))
+        val a = l.aside()!!
+        val b = l.aside(l.aside()!!.id.let { first -> dir.listFiles()!!.filter { it.name.startsWith("restored") }.map { File(it, "id").readText() }.first { it != first } })!!
+        assertEquals("A", a.state.accounts.single().issuer); assertEquals("B", b.state.accounts.single().issuer)
+        assertTrue(a.id != b.id)
+        assertTrue(l.dropAside(a.id))                                    // his delete of A, mid-open
+        assertFalse(l.dropAside(a.id))                                   // the open's cleanup of A: already gone, nothing else touched
+        assertNull(l.aside(a.id))
+        assertEquals("B", l.aside()!!.state.accounts.single().issuer)
+        assertEquals(b.id, l.aside()!!.id)
+        // A new stash never takes a deleted copy's id.
+        l.start(BackupState(accounts = listOf(BackupAccount("c", "C", secret = "c2VjcmV0"))))
+        assertTrue(l.stash())
+        assertTrue(listOf(a.id, b.id).none { id -> l.aside(id)?.state?.accounts?.single()?.issuer == "C" })
+        // The app opens and deletes only by the id the card showed.
+        val src = File("src/main/java/dev/sphinx/Backups.kt").readText()
+        assertTrue(src.contains("l.dropAside(a.id)") && !src.contains("dropForeign()"))
+    }
+
+    @Test fun aStateNoKeyCanOpenNeverStopsARetireAndAStuckOneIsShown() {
+        val dir = File(tmp(), "backup")
+        val l = LocalBackup(dir) { now }.apply { start(BackupState(accounts = listOf(BackupAccount("a", "A", secret = "c2VjcmV0")))) }
+        l.keyFile.delete()                                              // neither key.bin nor key.next
+        l.markRetire()
+        assertTrue(l.retire())
+        assertFalse(l.retirePending())
+        assertTrue(File(dir, "state.unopenable.bin").exists())
+        assertTrue(l.read()!!.accounts.isEmpty())
+        // The marker goes in through a rename (no half-written file left), and the Codes tab says when one is stuck.
+        l.markRetire()
+        assertTrue(l.retirePending() && !File(dir, "retire.pending.tmp").exists())
+        assertTrue(File("src/main/java/dev/sphinx/MainActivity.kt").readText().contains("Backups.local(app).retirePending()"))
+    }
+
+    @Test fun aSecondStashNeverOverwritesOneSetAsideBefore() {
+        val dir = File(tmp(), "backup")
+        val l = LocalBackup(dir) { now }
+        l.start(BackupState(accounts = listOf(BackupAccount("g1", "From Google", secret = "c2VjcmV0"))))
+        val google = l.key()!!
+        assertTrue(l.stash())                                            // the unopened Google backup
+        l.start(BackupState(accounts = listOf(BackupAccount("h1", "Here", secret = "c2VjcmV0"))))
+        assertTrue(l.stash(LocalBackup.CLEARED))                          // then a new fingerprint
+        // The older one is shown first and untouched; once it is dealt with, the next one comes up.
+        assertArrayEquals(google, l.foreign()!!.first)
+        assertEquals(LocalBackup.GOOGLE, l.foreignWhy())
+        l.dropAside(l.aside()!!.id)
+        assertEquals("Here", l.foreign()!!.second.accounts.single().issuer)
+        assertEquals(LocalBackup.CLEARED, l.foreignWhy())
+    }
+
+    @Test fun aPairingsWindowSurvivesASaveAndReload() {
+        val kv = HashMap<String, String>()
+        val s = SphinxStore({ kv[it] }, { k, v -> if (v == null) kv.remove(k) else kv[k] = v }, FakeKeys(), { now })
+        s.putPairing(Pairing("P".repeat(22), "Laptop", ByteArray(32), ByteArray(32), "https://relay.example.com", ByteArray(32), recv = 40, gaps = listOf(38L, 39L)))
+        val back = SphinxStore({ kv[it] }, { _, _ -> }, FakeKeys(), { now }).pairing("P".repeat(22))!!
+        assertEquals(listOf(38L, 39L), back.gaps)
+        assertTrue(ReplayWindow.fresh(39L, back.recv, back.gaps))       // a Long, still found after the round trip
+        assertFalse(ReplayWindow.fresh(37L, back.recv, back.gaps))
+    }
+
+    @Test fun aBackupThisPhoneDidntMakeIsSetAsideUnopened() {
+        val dir = File(tmp(), "backup")
+        val l = LocalBackup(dir) { now }
+        l.start(BackupState(accounts = listOf(BackupAccount("a1", "GitHub", secret = "c2VjcmV0"))))
+        val theirs = l.key()!!
+        assertTrue(l.stash())
+        // This phone starts its own; the other one waits, unopened, with its own key.
+        l.start()
+        assertTrue(l.read()!!.accounts.isEmpty())
+        val (k, s) = l.foreign()!!
+        assertArrayEquals(theirs, k)
+        assertEquals("GitHub", s.accounts.single().issuer)
+        assertFalse(l.key()!!.contentEquals(theirs))
+        l.dropAside(l.aside()!!.id)
+        assertNull(l.foreign())
+        assertFalse(LocalBackup(File(tmp(), "none")).stash())
+    }
+
+    @Test fun theBuiltInTokenGoesOnlyToTheBuiltInRelay() {
+        val home = "https://sphinx.example.com"
+        assertEquals("T", RelayClient.tokenFor("https://sphinx.example.com", "", home, "T"))
+        assertEquals("T", RelayClient.tokenFor("https://SPHINX.example.com:443/", "", home, "T"))
+        assertEquals("", RelayClient.tokenFor("https://attacker.example", "", home, "T"))
+        assertEquals("", RelayClient.tokenFor("https://sphinx.example.com.attacker.example", "", home, "T"))
+        assertEquals("", RelayClient.tokenFor("http://sphinx.example.com", "", home, "T"))
+        assertEquals("", RelayClient.tokenFor("https://sphinx.example.com:8443", "", home, "T"))
+        // A token the QR or the screen gave goes where it says.
+        assertEquals("Q", RelayClient.tokenFor("https://attacker.example", "Q", home, "T"))
+        // The built-in value passed back in (a stored or pre-filled field) still goes only home.
+        assertEquals("", RelayClient.tokenFor("https://attacker.example", "T", home, "T"))
+        assertEquals("T", RelayClient.tokenFor(home, "T", home, "T"))
+        // What a backup keeps: a typed token for its relay; not the built-in one, not the old relay's token on a move.
+        assertEquals("C", RelayClient.keepToken(" C ", "https://mine.example", "T", null, null))
+        assertEquals("", RelayClient.keepToken("T", home, "T", null, null))
+        assertEquals("", RelayClient.keepToken("C", "https://elsewhere.example", "T", "https://mine.example", "C"))
+        assertEquals("C", RelayClient.keepToken("C", "https://mine.example/", "T", "https://mine.example", "C"))
+        assertEquals("D", RelayClient.keepToken("D", "https://elsewhere.example", "T", "https://mine.example", "C"))
+    }
+
+    @Test fun theProofOpensOnlyWithTheCipherHisFingerprintAuthorised() {
+        val keys = FakeKeys()
+        val ch = Proof.challenge(keys)
+        assertFalse(Proof.check(keys.unwrapper(), ch))
+        keys.approved = true
+        assertTrue(Proof.check(keys.unwrapper(), ch))
+        // Another key pair's cipher opens nothing.
+        assertFalse(Proof.check(FakeKeys().apply { approved = true }.unwrapper(), ch))
+    }
+
     @Test fun theKeysSafeHasCapsAndOpensOnlyWithTheFingerprint() {
         val p = Phone()
         p.backup.start()
@@ -187,9 +522,15 @@ class BackupTest {
         val rules = File("src/main/res/xml/data_extraction_rules.xml").readText()
         assertTrue(rules.contains("disableIfNoEncryptionCapabilities=\"true\""))
         val includes = Regex("""<include domain="(\w+)" path="([^"]+)"""").findAll(rules).map { it.groupValues[1] + ":" + it.groupValues[2] }.toSet()
-        assertEquals(setOf("file:backup/state.bin", "file:backup/key.bin"), includes)
+        assertEquals(setOf("file:backup/state.bin", "file:backup/key.bin", "file:backup/key.next"), includes)
+        // A rotation stopped between its steps leaves the key in key.next: the cloud backup carries it too.
+        assertTrue(rules.substringAfter("<cloud-backup").substringBefore("</cloud-backup>").contains("backup/key.next"))
+        // A device-to-device transfer needs only the screen lock: it never carries the key that opens the state.
+        val transfer = rules.substringAfter("<device-transfer>").substringBefore("</device-transfer>")
+        assertTrue(transfer.contains("backup/state.bin") && !transfer.contains("key.bin"))
+        assertTrue(rules.substringAfter("<cloud-backup").substringBefore("</cloud-backup>").contains("backup/key.bin"))
         val legacy = File("src/main/res/xml/backup_rules.xml").readText()
-        assertEquals(2, Regex("requireFlags=\"clientSideEncryption\"").findAll(legacy).count())
+        assertEquals(3, Regex("requireFlags=\"clientSideEncryption\"").findAll(legacy).count())
         val manifest = File("src/main/AndroidManifest.xml").readText()
         assertTrue(manifest.contains("android:allowBackup=\"true\"") && manifest.contains("@xml/data_extraction_rules") && manifest.contains("@xml/backup_rules"))
     }

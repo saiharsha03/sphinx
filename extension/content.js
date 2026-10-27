@@ -63,16 +63,25 @@
     if (!note) {
       note = document.createElement("div");
       note.setAttribute("role", "status");
+      // Basalt with a jade "Sphinx" cartouche tag (a pill with a short bar near its right end), as in the app.
       Object.assign(note.style, {
-        position: "absolute", zIndex: 2147483647, font: "500 12px/16px system-ui, sans-serif", color: "#f3ead9", background: "#26221d",
-        border: "1px solid #e8a33d", borderRadius: "6px", padding: "4px 8px", pointerEvents: "none", maxWidth: "280px",
+        position: "absolute", zIndex: 2147483647, font: "500 12.5px/16px system-ui, sans-serif", color: "#f2f2f2", background: "#0a0a0a",
+        border: "1px solid rgba(255,255,255,.10)", borderRadius: "10px", padding: "6px 12px 6px 7px", pointerEvents: "none", maxWidth: "320px",
+        display: "flex", alignItems: "center", gap: "8px",
       });
+      const tag = document.createElement("span");
+      tag.textContent = "Sphinx";
+      Object.assign(tag.style, { position: "relative", flex: "none", border: "1px solid #7fd6aa", borderRadius: "999px", padding: "0 13px 0 8px", color: "#7fd6aa", fontSize: "11.5px", lineHeight: "16px" });
+      const tie = document.createElement("span");
+      Object.assign(tie.style, { position: "absolute", right: "5px", top: "4px", bottom: "4px", width: "1px", background: "#7fd6aa" });
+      tag.appendChild(tie);
+      note.append(tag, document.createElement("span"));
       document.documentElement.appendChild(note);
     }
     const r = el.getBoundingClientRect();
     note.style.left = `${window.scrollX + r.left}px`;
     note.style.top = `${window.scrollY + r.bottom + 4}px`;
-    note.textContent = text;
+    note.lastChild.textContent = text;
     clearTimeout(note._t);
     if (!keep) note._t = setTimeout(() => { note?.remove(); note = null; }, 5000);
   }
@@ -113,7 +122,13 @@
     // His fingerprint was the yes, so the code is sent on too (owner, 2026-10-23): the form the code box is in is
     // submitted, as pressing Enter would, never a guessed button (it could be Cancel or "try another way").
     const form = at.form || at.closest("form");
-    const sent = !!form && (() => { try { setTimeout(() => form.requestSubmit ? form.requestSubmit() : form.submit(), 300); return true; } catch { return false; } })();
+    // Only a form that posts back to this page's own origin: one the page points elsewhere (an injected form) gets the
+    // code typed in, never sent (review 2026-10-27).
+    // Read and submit through the prototypes: a field named "action", "getAttribute" or "requestSubmit" can shadow them.
+    // requestSubmit() with no submitter posts to the form's own action (no button's formaction applies). Checked again
+    // right before the submit: the page may change the action in between.
+    const onHome = () => !!form && D.sameOrigin(Element.prototype.getAttribute.call(form, "action") ?? "", location.origin, document.baseURI);
+    const sent = onHome() && (() => { try { setTimeout(() => { if (onHome()) HTMLFormElement.prototype.requestSubmit.call(form); }, 300); return true; } catch { return false; } })();
     say(at, `Sphinx: filled${w.account ? ` (${w.account})` : ""}${sent ? " and sent" : ". Check it and continue"}.`);
     return null;
   }

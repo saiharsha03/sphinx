@@ -35,18 +35,21 @@ def relay(monkeypatch, fcm):
 
 @pytest.fixture
 def client(relay):
-    c = TestClient(hr.create_app(relay, register_token=""))
+    c = TestClient(hr.create_app(relay, register_token="", insecure_dev=True))
     assert c.post("/v1/pairings", json={"pid": PID, "key": b64(KEY), "hello": HELLO}).status_code == 200
     return c
 
 
-def test_carry_is_newest_first_and_stops_before_the_cap():
-    q = [{"pid": PID, "rid": f"r{i:021d}", "blob": "b" * 1000, "at": i} for i in range(5)]
+def test_carry_is_every_blob_oldest_first_or_none():
+    # Their sealed counters must arrive in order (review 2026-10-27: newest first made the older one a replay).
+    q = [{"pid": PID, "rid": f"r{i:021d}", "blob": "b" * 1000, "at": i} for i in (2, 0, 1)]
     got = json.loads(hr.carry(q))
-    assert [b["rid"] for b in got] == ["r000000000000000000004", "r000000000000000000003", "r000000000000000000002"]
+    assert [b["rid"] for b in got] == ["r000000000000000000000", "r000000000000000000001", "r000000000000000000002"]
     assert set(got[0]) == {"pid", "rid", "blob"}
     assert len(hr.carry(q)) <= hr.CARRY_MAX
-    # Not even the newest fits: a plain sync.
+    # Not all of them fit: none is carried, the phone fetches them all in order.
+    assert hr.carry([{"pid": PID, "rid": f"r{i:021d}", "blob": "b" * 1000, "at": i} for i in range(5)]) is None
+    # Not even one fits: a plain sync.
     assert hr.carry([{"pid": PID, "rid": "r" * 22, "blob": "b" * hr.CARRY_MAX, "at": 0}]) is None
     assert hr.carry([]) is None
 
@@ -81,7 +84,7 @@ def test_a_relay_without_fcm_at_all_runs(monkeypatch):
     monkeypatch.delenv("SPHINX_FCM_ACCOUNT", raising=False)
     assert not hr.Fcm(None).available()
     r = hr.Relay(hr.FileStore(None))
-    c = TestClient(hr.create_app(r, register_token=""))
+    c = TestClient(hr.create_app(r, register_token="", insecure_dev=True))
     assert c.post("/v1/pairings", json={"pid": PID, "key": b64(KEY), "hello": HELLO}).status_code == 200
     assert call(c, "POST", "/v1/push", j({"token": TOKEN})).json() == {"push": False}
     assert ask(c).status_code == 200

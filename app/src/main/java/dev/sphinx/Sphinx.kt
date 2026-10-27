@@ -31,12 +31,13 @@ object Sphinx {
     /** Copy notifications: NOTE_COPY + the account's slot (SphinxStore keeps slots unique), so none collide. */
     const val NOTE_COPY = 7_950
 
-    private val pending = ConcurrentHashMap<String, Pending>()
+    /** By [Pending.waitId] (pairing and rid): another pairing's request can't take the place of one on screen. */
+    private val pending = Waiting<Pending> { it.waitId }
     private val _asks = MutableStateFlow<List<Pending>>(emptyList())
     /** What the approval screen shows. */
     val asks: StateFlow<List<Pending>> = _asks
 
-    fun pending(rid: String): Pending? = pending[rid]?.takeIf { it.expires > System.currentTimeMillis() }
+    fun pending(id: String): Pending? = pending[id]?.takeIf { it.expires > System.currentTimeMillis() }
 
     private fun publish() { _asks.value = pending.values.sortedBy { it.expires } }
 
@@ -71,22 +72,31 @@ object Sphinx {
     private fun handle(c: Context, store: SphinxStore, b: RelayClient.Blob, asked: () -> Unit): Boolean {
         val p = store.pairing(b.pid)
         if (p == null) { Log.warn("request from an unknown pairing"); return false }
-        when (val d = SphinxLogic.decide(p, b.rid, b.blob, store.accounts(), System.currentTimeMillis(), { key -> store.lastPick(key) }, store.textSites())) {
+        val enrolled = p.signer && UnlockStore.get(c).enrolled()
+        when (val d = SphinxLogic.decide(p, b.rid, b.blob, store.accounts(), System.currentTimeMillis(), { key -> store.lastPick(key) }, store.textSites(), enrolled)) {
             is Decision.Drop -> { Log.warn("refused a laptop request", d.why); return false }
             is Decision.Answer -> { seen(store, d.pairing); send(c, d.pairing.pid, d.rid, d.reply); Log.info(d.line) }
             is Decision.Handoff -> { seen(store, d.pairing); Handoff.receive(c, d.pairing, d.rid, d.item); Log.info("handoff from a laptop", d.item.type) }
+            is Decision.Sign -> {
+                seen(store, d.pairing)
+                if (!signs.add(d.ask)) { Log.warn("refused a sign request reusing a waiting id"); return false }
+                publishSigns()
+                Log.info("sign request", d.ask.key)
+                askSign(c, d.ask)
+                asked()
+            }
             is Decision.Ask -> {
                 seen(store, d.pairing)
                 // Inside a pre-approval's window for this site (code.ready): the code at once, no prompt.
                 if (serve(c, d.pending)) return true
-                pending[d.pending.rid] = d.pending
+                if (!pending.add(d.pending)) { Log.warn("refused a request reusing a waiting id"); return false }
                 publish()
                 // A texted-code site: nothing to approve yet; it waits for an SMS or email code ([notification]).
                 if (d.pending.textOnly)
                     Log.info("request from ${d.pending.host}", "waits for a texted one")
                 // Its site's pre-approval is on the screen: it waits on that answer (one prompt, not two).
                 else if (SphinxLogic.rides(pending.values, d.pending, System.currentTimeMillis())) {
-                    riders += d.pending.rid
+                    riders += d.pending.waitId
                     Log.info("request from ${d.pending.host}", "waits on the pre-approval")
                 } else {
                     Log.info((if (d.pending.ready) "pre-approval from " else "request from ") + d.pending.host, "${d.pending.accounts.size} account(s)")
@@ -98,8 +108,8 @@ object Sphinx {
         return true
     }
 
-    /** The highest request counter taken, in place (never lowered by a stale copy). */
-    private fun seen(store: SphinxStore, p: Pairing) { store.updatePairing(p.pid) { it.copy(recv = maxOf(it.recv, p.recv), lastUsed = p.lastUsed) } }
+    /** The request counters taken (the highest and the window's gaps), in place; never from a stale copy (handling runs one at a time). */
+    private fun seen(store: SphinxStore, p: Pairing) { store.updatePairing(p.pid) { if (p.recv >= it.recv) it.copy(recv = p.recv, gaps = p.gaps, lastUsed = p.lastUsed) else it } }
 
     /** Seals with the next reply counter inside the store's lock, then sends. */
     private fun send(c: Context, pid: String, rid: String, body: Map<String, Any?>) {
@@ -114,10 +124,15 @@ object Sphinx {
         Thread { runCatching { if (!work(app)) Log.warn("approved, but nothing was sent") }.onFailure { Log.warn("send failed", it.javaClass.simpleName) } }.start()
     }
 
-    /** Approve with an authorised cipher: the code goes back sealed (or, for a pre-approval, the window opens). Blocking. */
-    fun approve(c: Context, rid: String, accountId: String, u: CipherUnwrapper): Boolean {
-        val p = pending.remove(rid) ?: return false.also { Log.info("request expired before approval") }
-        publish(); cancelAsk(c); dropText(c, rid)
+    /**
+     * Approve with an authorised cipher: the code goes back sealed (or, for a pre-approval, the window opens). [shown] is
+     * the very request the screen and the prompt showed; anything else under its id answers nothing. Blocking.
+     */
+    fun approve(c: Context, shown: Pending, accountId: String, u: CipherUnwrapper): Boolean {
+        if (!pending.take(shown)) return false.also { Log.info("request expired before approval") }
+        val p = shown
+        val rid = p.rid
+        publish(); cancelAsk(c); dropText(c, p.waitId)
         val a = p.accounts.firstOrNull { it.id == accountId } ?: return false
         if (p.expires <= System.currentTimeMillis()) { Log.info("request from ${p.host}: expired"); return false }
         // Remembered for next time this same choice comes up (account ids only, no names or sites).
@@ -132,20 +147,27 @@ object Sphinx {
             send(c, p.pid, rid, SphinxLogic.readied(rid, true, held = SphinxLogic.held(a, times, codes, now)))
             Log.info("pre-approval from ${p.host}: approved", a.issuer.take(40))
             // A code request that came while this one was on screen gets its code now; any other that waited on it, a prompt.
-            pending.values.filter { !it.ready }.sortedBy { it.expires }.firstOrNull { serve(c, it) }?.let { pending.remove(it.rid); riders.remove(it.rid); publish() }
+            pending.values.filter { !it.ready }.sortedBy { it.expires }.firstOrNull { serve(c, it) }?.let { pending.remove(it.waitId); riders.remove(it.waitId); publish() }
             unride(c)
             return true
         }
         val code = SphinxStore.get(c).code(a, u, now)
-        send(c, p.pid, rid, SphinxLogic.code(rid, a, code, Totp.left(now, a.period)))
+        send(c, p.pid, rid, SphinxLogic.code(rid, a, code, now))
         Log.info("request from ${p.host}: approved", a.issuer.take(40))
         return true
     }
 
-    fun deny(c: Context, rid: String) {
-        val p = pending.remove(rid) ?: return
-        publish(); cancelAsk(c); dropText(c, rid)
-        runCatching { send(c, p.pid, rid, SphinxLogic.no(p, "denied")) }.onFailure { Log.warn("denial not sent", it.javaClass.simpleName) }
+    /** [id]: the [Pending.waitId] or [SignAsk.waitId] the screen or the banner holds. */
+    fun deny(c: Context, id: String) {
+        signs.remove(id)?.let { a ->
+            publishSigns(); cancelSign(c)
+            runCatching { send(c, a.pid, a.rid, SigningRules.no(a.rid, "denied")) }.onFailure { Log.warn("denial not sent", it.javaClass.simpleName) }
+            Log.info("sign request: denied", a.key)
+            return
+        }
+        val p = pending.remove(id) ?: return
+        publish(); cancelAsk(c); dropText(c, id)
+        runCatching { send(c, p.pid, p.rid, SphinxLogic.no(p, "denied")) }.onFailure { Log.warn("denial not sent", it.javaClass.simpleName) }
         Log.info((if (p.ready) "pre-approval from " else "request from ") + "${p.host}: denied")
         if (p.ready) unride(c)
     }
@@ -155,12 +177,19 @@ object Sphinx {
         val now = System.currentTimeMillis()
         var ready = false
         for (p in pending.values.filter { it.expires <= now }) {
-            pending.remove(p.rid)
-            dropText(c, p.rid)
+            pending.remove(p.waitId)
+            dropText(c, p.waitId)
             runCatching { send(c, p.pid, p.rid, SphinxLogic.no(p, "expired")) }
             Log.info((if (p.ready) "pre-approval from " else "request from ") + "${p.host}: expired")
             ready = ready || p.ready
         }
+        for (a in signs.values.filter { it.expires <= now }) {
+            signs.remove(a.waitId)
+            runCatching { send(c, a.pid, a.rid, SigningRules.no(a.rid, "expired")) }
+            Log.info("sign request: expired", a.key)
+        }
+        publishSigns()
+        if (signs.isEmpty()) cancelSign(c)
         window.close(now)
         publish()
         if (ready) unride(c)
@@ -175,7 +204,7 @@ object Sphinx {
     private fun serve(c: Context, r: Pending): Boolean {
         val (a, code) = window.take(r, System.currentTimeMillis()) ?: return false
         val now = System.currentTimeMillis()
-        runCatching { send(c, r.pid, r.rid, SphinxLogic.code(r.rid, a, code, Totp.left(now, a.period))) }.onFailure { Log.warn("send failed", it.javaClass.simpleName); return false }
+        runCatching { send(c, r.pid, r.rid, SphinxLogic.code(r.rid, a, code, now)) }.onFailure { Log.warn("send failed", it.javaClass.simpleName); return false }
         Log.info("request from ${r.host}: approved in advance", a.issuer.take(40))
         return true
     }
@@ -183,16 +212,16 @@ object Sphinx {
     /** A pre-approval ended without a yes: code requests that waited on it get the usual prompt. */
     private fun unride(c: Context) {
         val now = System.currentTimeMillis()
-        for (rid in riders.toList()) {
-            val r = pending(rid)
-            if (r == null) { riders.remove(rid); continue }
+        for (id in riders.toList()) {
+            val r = pending(id)
+            if (r == null) { riders.remove(id); continue }
             if (SphinxLogic.rides(pending.values, r, now)) continue
-            riders.remove(rid)
+            riders.remove(id)
             ask(c, r)
         }
     }
 
-    /** Code requests waiting on a pre-approval's answer (rids only). */
+    /** Code requests waiting on a pre-approval's answer (their waitIds only). */
     private val riders = ConcurrentHashMap.newKeySet<String>()
 
     // ---- the prompt ----
@@ -207,6 +236,18 @@ object Sphinx {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = onOk()
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) = onFail(errString.toString())
             })
+    }
+
+    /**
+     * A fingerprint bound to the codes key, proved by opening a fresh challenge with the cipher it authorised ([Proof]):
+     * before the relay backup is turned on or moved, its passcode changed, the phrase turned on, or a Google backup
+     * opened (review 2026-10-27: the app's own unlock was enough for these).
+     */
+    fun confirm(c: Context, title: String, subtitle: String, onOk: () -> Unit, onFail: (String) -> Unit) {
+        val (u, why) = unwrapper(c)
+        if (u == null) { onFail(why ?: "The codes key can't be used."); return }
+        val ch = runCatching { Proof.challenge(KeystoreBoxKeys(SphinxStore.KEY_ALIAS)) }.getOrElse { onFail("The codes key can't be used (${it.javaClass.simpleName})."); return }
+        fingerprint(c, title, subtitle, u, onOk = { if (Proof.check(u, ch)) onOk() else onFail("The fingerprint didn't open the codes key.") }, onFail = onFail)
     }
 
     /** A plain strong-biometric check (no cipher): the app's own lock, and sending a texted code. */
@@ -227,8 +268,13 @@ object Sphinx {
     } catch (e: SphinxStore.Cleared) {
         // The Keys safe's entries were sealed to the same key: gone with it. The backups still hold both.
         runCatching { SafeStore.get(c).clear() }
+        // So was the signing unlock secret: enrol it again from the passkey (Settings, Signing).
+        runCatching { UnlockStore.get(c).remove() }
+        // The local backup holds every secret under a key on disk: set aside, reopened only with its passcode or phrase.
+        // Its marker was written before the key went; a failure here is said, and the next start finishes it.
+        val retired = runCatching { Backups.retire(c) }
         Log.warn("codes cleared by a new fingerprint")
-        null to e.message
+        null to (e.message + if (retired.isFailure) " This phone's backup couldn't be set aside yet: restart Sphinx." else "")
     } catch (e: Exception) {
         null to "The codes key can't be used (${e.javaClass.simpleName})."
     }
@@ -252,7 +298,7 @@ object Sphinx {
     private fun ask(c: Context, p: Pending) {
         channels(c)
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        val open = PendingIntent.getActivity(c, NOTE_ASK, ApproveActivity.ask(c, p.rid), flags)
+        val open = PendingIntent.getActivity(c, NOTE_ASK, ApproveActivity.ask(c, p.waitId), flags)
         val public = NotificationCompat.Builder(c, CHANNEL).setSmallIcon(R.drawable.ic_notify).setContentTitle("Code request").setContentText("Open Sphinx to answer").build()
         val n = NotificationCompat.Builder(c, CHANNEL)
             .setSmallIcon(R.drawable.ic_notify)
@@ -269,8 +315,8 @@ object Sphinx {
             // Answer from the banner itself: Approve when one account is meant, Deny always.
             .apply {
                 if (p.picked != null || p.accounts.size == 1)
-                    addAction(0, "Approve", PendingIntent.getActivity(c, NOTE_ASK + 1, ApproveActivity.approveNow(c, p.rid), flags))
-                addAction(0, "Deny", PendingIntent.getActivity(c, NOTE_ASK + 2, ApproveActivity.deny(c, p.rid), flags))
+                    addAction(0, "Approve", PendingIntent.getActivity(c, NOTE_ASK + 1, ApproveActivity.approveNow(c, p.waitId), flags))
+                addAction(0, "Deny", PendingIntent.getActivity(c, NOTE_ASK + 2, ApproveActivity.deny(c, p.waitId), flags))
             }
             .build()
         runCatching { c.getSystemService(NotificationManager::class.java).notify(NOTE_ASK, n) }.onFailure { Log.warn("request not shown", it.javaClass.simpleName) }
@@ -279,7 +325,7 @@ object Sphinx {
         val unlocked = c.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == false
         val awake = c.getSystemService(PowerManager::class.java)?.isInteractive == true
         if (unlocked && awake && Settings.canDrawOverlays(c))
-            runCatching { c.startActivity(ApproveActivity.ask(c, p.rid)) }.onFailure { Log.warn("full screen not opened", it.javaClass.simpleName) }
+            runCatching { c.startActivity(ApproveActivity.ask(c, p.waitId)) }.onFailure { Log.warn("full screen not opened", it.javaClass.simpleName) }
     }
 
     private fun cancelAsk(c: Context) { runCatching { c.getSystemService(NotificationManager::class.java).cancel(NOTE_ASK) } }
@@ -339,11 +385,11 @@ object Sphinx {
 
     // ---- codes from an SMS or email, to the laptop that is waiting ----
 
-    /** rid -> the texted code offered for that request. In memory only, gone with the request; never logged or sent elsewhere. */
-    private val texted = ConcurrentHashMap<String, String>()
+    /** waitId -> the texted code offered for that request. In memory only, gone with the request; never logged or sent elsewhere. */
+    private val texted = TextOffers()
     private const val NOTE_TEXT = 7_940
 
-    fun textedFor(rid: String): String? = texted[rid]?.takeIf { pending(rid) != null }
+    fun textedFor(id: String): TextOffer? = texted[id]?.takeIf { pending(id) != null }
 
     /**
      * An SMS or email code ([Domains.textCode]) while a paired laptop's request is fresh: "Send 482913 to the laptop?".
@@ -351,11 +397,11 @@ object Sphinx {
      */
     private fun offerText(c: Context, code: String) {
         // Codes whose request ended between wake-ups (expire runs on the next one) go now.
-        texted.keys.removeAll { pending(it) == null }
+        texted.keep { pending(it) != null }
         val p = SphinxLogic.forText(pending.values, System.currentTimeMillis()) ?: return
-        texted[p.rid] = code
+        texted.offer(p.waitId, code)
         channels(c)
-        val open = PendingIntent.getActivity(c, NOTE_TEXT, ApproveActivity.text(c, p.rid), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val open = PendingIntent.getActivity(c, NOTE_TEXT, ApproveActivity.text(c, p.waitId), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val public = NotificationCompat.Builder(c, CHANNEL).setSmallIcon(R.drawable.ic_notify).setContentTitle("Code request").setContentText("Open Sphinx to answer").build()
         val n = NotificationCompat.Builder(c, CHANNEL)
             .setSmallIcon(R.drawable.ic_notify)
@@ -375,20 +421,96 @@ object Sphinx {
     }
 
     /** After the fingerprint: the texted code goes back sealed as the answer to that request. Blocking. */
-    fun sendText(c: Context, rid: String): Boolean {
-        val code = texted[rid] ?: return false
-        val p = pending.remove(rid) ?: return false.also { dropText(c, rid); Log.info("request expired before approval") }
-        publish(); cancelAsk(c); dropText(c, rid)
+    fun sendText(c: Context, shown: TextOffer): Boolean {
+        // Exactly the code his prompt showed: a newer text that came meanwhile replaced the offer, and this answers nothing.
+        if (!texted.take(shown)) return false.also { Log.info("the texted one changed before approval") }
+        val id = shown.id
+        val code = shown.code
+        val p = pending.remove(id) ?: return false.also { dropText(c, id); Log.info("request expired before approval") }
+        publish(); cancelAsk(c); dropText(c, id)
         if (p.expires <= System.currentTimeMillis()) { Log.info("request from ${p.host}: expired"); return false }
         SphinxStore.get(c).pairing(p.pid) ?: return false
-        send(c, p.pid, rid, SphinxLogic.texted(rid, code))
+        send(c, p.pid, p.rid, SphinxLogic.texted(p.rid, code))
         Log.info("request from ${p.host}: texted one sent")
         return true
     }
 
-    private fun dropText(c: Context, rid: String) {
-        if (texted.remove(rid) != null) runCatching { c.getSystemService(NotificationManager::class.java).cancel(NOTE_TEXT) }
+    private fun dropText(c: Context, id: String) {
+        if (texted.drop(id) != null) runCatching { c.getSystemService(NotificationManager::class.java).cancel(NOTE_TEXT) }
     }
+
+    // ---- release signing (sign.approve from the release signer's pairing, docs/DESIGN.md, Release signing) ----
+
+    private const val NOTE_SIGN = 7_960
+    private val signs = Waiting<SignAsk> { it.waitId }
+    private val _signAsks = MutableStateFlow<List<SignAsk>>(emptyList())
+    /** What the signing screen shows. */
+    val signAsks: StateFlow<List<SignAsk>> = _signAsks
+
+    private fun publishSigns() { _signAsks.value = signs.values.sortedBy { it.expires } }
+
+    /**
+     * After his fingerprint authorised [u]: the secret of the one key file [shown] names, derived from the unlock secret
+     * here, goes back sealed to the signer, which opens that key for this one sign. U never leaves the phone. Blocking.
+     */
+    fun approveSign(c: Context, shown: SignAsk, u: CipherUnwrapper): Boolean {
+        if (!signs.take(shown)) return false.also { Log.info("sign request expired before approval") }
+        val a = shown
+        publishSigns(); cancelSign(c)
+        if (a.expires <= System.currentTimeMillis()) { Log.info("sign request: expired", a.key); return false }
+        SphinxStore.get(c).pairing(a.pid) ?: return false
+        val store = UnlockStore.get(c)
+        val pins = store.pins()
+        pins.refusal(a)?.let { why ->
+            send(c, a.pid, a.rid, SigningRules.no(a.rid, why))
+            Log.warn("sign request refused: legacy key file", a.key)
+            return false
+        }
+        val unlock = store.open(u)
+        try {
+            if (a.unlock.isNotEmpty() && a.unlock != SigningRules.unlockId(unlock)) {
+                send(c, a.pid, a.rid, SigningRules.no(a.rid, "sealed with another unlock secret"))
+                Log.warn("sign request refused: another unlock id", a.key)
+                return false
+            }
+            // Pinned before the secret goes: a send that dies half way can't leave the file unpinned.
+            store.savePins(pins.after(a))
+            val k = SigningRules.keySecret(unlock, a)
+            try { send(c, a.pid, a.rid, SigningRules.approved(a.rid, k)) } finally { k.fill(0) }
+        } finally { unlock.fill(0) }
+        Log.info("sign request: approved", a.key)
+        return true
+    }
+
+    private fun askSign(c: Context, a: SignAsk) {
+        channels(c)
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val open = PendingIntent.getActivity(c, NOTE_SIGN, ApproveActivity.sign(c, a.waitId), flags)
+        // Over the keyguard only "Release signing request"; the label, key and hash after unlocking (review 2026-10-27).
+        val public = NotificationCompat.Builder(c, CHANNEL).setSmallIcon(R.drawable.ic_notify).setContentTitle("Release signing request").setContentText("Open Sphinx to answer").build()
+        // No Approve on the banner: a sign is approved only with a tap on the screen that shows the whole hash.
+        val n = NotificationCompat.Builder(c, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(SigningRules.question(a))
+            .setContentText("${SigningRules.detail(a)}. Check the hash on the screen, then approve.")
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(public)
+            .setContentIntent(open)
+            .setFullScreenIntent(open, true)
+            .setTimeoutAfter((a.expires - System.currentTimeMillis()).coerceAtLeast(1_000L))
+            .setAutoCancel(true)
+            .addAction(0, "Deny", PendingIntent.getActivity(c, NOTE_SIGN + 2, ApproveActivity.deny(c, a.waitId), flags))
+            .build()
+        runCatching { c.getSystemService(NotificationManager::class.java).notify(NOTE_SIGN, n) }.onFailure { Log.warn("sign request not shown", it.javaClass.simpleName) }
+        val unlocked = c.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == false
+        val awake = c.getSystemService(PowerManager::class.java)?.isInteractive == true
+        if (unlocked && awake && Settings.canDrawOverlays(c))
+            runCatching { c.startActivity(ApproveActivity.sign(c, a.waitId)) }.onFailure { Log.warn("full screen not opened", it.javaClass.simpleName) }
+    }
+
+    private fun cancelSign(c: Context) { runCatching { c.getSystemService(NotificationManager::class.java).cancel(NOTE_SIGN) } }
 
     // ---- pairing ----
 
@@ -398,10 +520,12 @@ object Sphinx {
      */
     fun pair(c: Context, qr: String): Pairing {
         val o = SphinxCrypto.offer(qr) ?: error("That isn't a Sphinx pairing QR")
+        // One release signer: a second Signer QR is refused until the first is unpaired on purpose (review 2026-10-27).
+        if (!SigningRules.mayPair(o.signer, SphinxStore.get(c).pairings())) error("A Signer is already paired. Unpair it first (Settings, Signing).")
         val token = Push.token(c) ?: error(if (Push.available(c)) "No Firebase token yet (Google Play services, or the network). Try again in a moment."
             else "This build has no Firebase (google-services.json), so laptop requests could never reach the phone.")
         val (p, hello) = SphinxCrypto.accept(o, System.currentTimeMillis()) ?: error("The laptop's key isn't valid")
-        RelayClient.pair(p, hello, o.token.ifBlank { c.getString(R.string.sphinx_relay_token) })
+        RelayClient.pair(p, hello, RelayClient.tokenFor(o.relay, o.token, c.getString(R.string.sphinx_relay), c.getString(R.string.sphinx_relay_token)))
         SphinxStore.get(c).putPairing(p)
         o.secret.fill(0)
         val push = runCatching { RelayClient.push(p, token) }.getOrDefault(false)

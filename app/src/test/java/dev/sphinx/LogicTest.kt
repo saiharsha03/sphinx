@@ -98,6 +98,7 @@ class LogicTest {
                 is Decision.Ask -> { p = d.pairing; seen += "ask"; true }
                 is Decision.Answer -> { p = d.pairing; seen += "answer"; true }
                 is Decision.Handoff -> { p = d.pairing; seen += "handoff"; true }
+                is Decision.Sign -> { p = d.pairing; seen += "sign"; true }
             }
         }
         // Carried: asked at once; the inbox's copy is acked, not run again.
@@ -143,6 +144,23 @@ class LogicTest {
         assertEquals("direction", (SphinxLogic.decide(pairing, rid, wrongWay, store.accounts(), now) as Decision.Drop).why)
     }
 
+    @Test fun requestsPostedOutOfOrderBothArriveEachOnce() {
+        // Codex's reproduction (review 2026-10-27): the laptop's counters 1 and 2, the POST of 2 got to the relay first.
+        accounts("GitHub" to "w")
+        val (rid2, blob2) = req(mapOf("t" to "code", "rid" to "B".repeat(22), "host" to "github.com"), ctr = 2)
+        val (rid1, blob1) = req(mapOf("t" to "code", "rid" to "A".repeat(22), "host" to "github.com"), ctr = 1)
+        val after2 = (SphinxLogic.decide(pairing, rid2, blob2, store.accounts(), now) as Decision.Ask).pairing
+        assertEquals(2L, after2.recv); assertEquals(listOf(1L), after2.gaps)
+        val after1 = (SphinxLogic.decide(after2, rid1, blob1, store.accounts(), now) as Decision.Ask).pairing
+        assertEquals(2L, after1.recv); assertTrue(after1.gaps.isEmpty())
+        // Each once: both again are replays.
+        assertEquals("replay", (SphinxLogic.decide(after1, rid1, blob1, store.accounts(), now) as Decision.Drop).why)
+        assertEquals("replay", (SphinxLogic.decide(after1, rid2, blob2, store.accounts(), now) as Decision.Drop).why)
+        // A pairing saved before the window (no gaps) stays strict; the window reaches SIZE back at most.
+        assertEquals("replay", (SphinxLogic.decide(pairing.copy(recv = 2), rid1, blob1, store.accounts(), now) as Decision.Drop).why)
+        assertEquals(ReplayWindow.SIZE - 1, ReplayWindow.after(100, 2, emptyList()).second.size)
+    }
+
     @Test fun theDomainListAnswersWithoutHim() {
         accounts("GitHub" to "w", "Hetzner" to "me", "Acme" to "x")
         val (rid, blob) = req(mapOf("t" to "domains", "rid" to "D".repeat(22)))
@@ -160,12 +178,14 @@ class LogicTest {
         try { store.code(a, store.unwrapper(), 59_000); error("opened without a fingerprint") } catch (_: IllegalStateException) {}
         keys.approved = true
         assertEquals("287082", store.code(a, store.unwrapper(), 59_000))
-        val (blob, next) = SphinxLogic.reply(pairing, SphinxLogic.code("R".repeat(22), a, "287082", 12), now)
+        val (blob, next) = SphinxLogic.reply(pairing, SphinxLogic.code("R".repeat(22), a, "287082", 59_000), now)
         assertEquals(1L, next.sent)
         val o = SphinxCrypto.open(pairing.p2l, pairing.pid, 'r', blob, 0, now) as Opened.Ok
         val body = json.readTree(o.plain)
         assertEquals("code.reply", body.path("kind").asText()); assertEquals(1, body.path("v").asInt()); assertEquals("R".repeat(22), body.path("rid").asText())
         assertEquals("287082", body.path("body").path("code").asText()); assertEquals("w", body.path("body").path("account").asText())
+        // Made at 59 s: 1 s left, and its period ends at unix second 60, so the laptop drops it if it arrives later.
+        assertEquals(1, body.path("body").path("ttl").asInt()); assertEquals(60L, body.path("body").path("until").asLong())
         assertTrue(SphinxCrypto.open(pairing.p2l, pairing.pid, 'r', blob, 1, now) is Opened.No)
     }
 
@@ -334,6 +354,23 @@ class LogicTest {
         assertEquals(1, dropped)
     }
 
+    @Test fun theRetireMarkerIsWrittenBeforeTheKeyGoesAndWithoutItNothingGoes() {
+        val order = ArrayList<String>()
+        var failMarker = false
+        val k = FakeKeys().apply { broken = Invalidated() }
+        val kv2 = HashMap<String, String>()
+        val s = SphinxStore({ kv2[it] }, { a, v -> if (v == null) kv2.remove(a) else kv2[a] = v }, k, { now }, dropKey = { order += "drop" },
+            invalidated = { it is Invalidated }, retiring = { if (failMarker) error("disk full"); order += "marker" })
+        s.add(listOf(Imported("GitHub", "w", secret.copyOf(), Algo.SHA1, 6, 30)))
+        failMarker = true
+        assertFalse(runCatching { s.unwrapper() }.exceptionOrNull() is SphinxStore.Cleared)
+        assertEquals(emptyList<String>(), order)                          // no marker: nothing dropped, the account stays
+        assertEquals(1, s.accounts().size)
+        failMarker = false
+        assertTrue(runCatching { s.unwrapper() }.exceptionOrNull() is SphinxStore.Cleared)
+        assertEquals(listOf("marker", "drop"), order)
+    }
+
     @Test fun eachAccountHasItsOwnNotificationSlot() {
         val made = accounts(*(1..45).map { "Issuer$it" to "n$it" }.toTypedArray())
         assertEquals((0 until 45).toList(), made.map { it.slot })
@@ -402,6 +439,36 @@ class LogicTest {
         val gone = old.copy(rid = "C".repeat(22), expires = now - 1)
         assertEquals(new.rid, SphinxLogic.forText(listOf(old, new, gone), now)?.rid)
         assertNull(SphinxLogic.forText(listOf(gone), now))                        // no fresh request: nothing is offered
+        // A pre-approval takes no code: a texted one never goes to it (its riders would be left waiting).
+        assertEquals(old.rid, SphinxLogic.forText(listOf(old, new.copy(ready = true)), now)?.rid)
+        assertNull(SphinxLogic.forText(listOf(new.copy(ready = true)), now))
+    }
+
+    @Test fun aTextedCodeSendsExactlyTheOfferItsPromptShowed() {
+        val t = TextOffers()
+        val shown = t.offer("P/R", "482913")
+        // Another text arrives while the prompt is up: the answer to the old prompt sends nothing.
+        val newer = t.offer("P/R", "551200")
+        assertFalse(t.take(shown))
+        assertTrue(t.take(newer))
+        assertFalse(t.take(newer))                                         // once
+        assertNull(t["P/R"])
+    }
+
+    @Test fun aWaitingRequestCantBeReplacedAndAnAnswerTakesOnlyTheOneShown() {
+        val w = Waiting<Pending> { it.waitId }
+        val shown = Pending("R".repeat(22), pairing.pid, "L", "github.com", accounts = emptyList(), picked = null, expires = now + 60_000)
+        assertTrue(w.add(shown))
+        // Another request under the same pairing and rid is refused; the one on screen stays.
+        val swapped = shown.copy(host = "evil.example")
+        assertFalse(w.add(swapped))
+        assertTrue(w[shown.waitId] === shown)
+        // The same rid from another pairing is another request.
+        assertTrue(w.add(shown.copy(pid = "Q".repeat(22))))
+        // An answer takes exactly the request it was shown, once; a look-alike takes nothing.
+        assertFalse(w.take(swapped))
+        assertTrue(w.take(shown))
+        assertFalse(w.take(shown))
     }
 
     @Test fun onlyASmsOrEmailWithCodeWordingAndOneCodeIsOffered() {

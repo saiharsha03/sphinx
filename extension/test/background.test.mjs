@@ -57,7 +57,7 @@ globalThis.fetch = async (url, init = {}) => {
   }
   return { status: 200, ok: true, json: async () => ({ queued: true }) };
 };
-const { _test, canonical, phoneState, dotState, heldCodes, heldNow } = await import("../background.js");
+const { _test, canonical, phoneState, dotState, heldCodes, heldNow, heldFor, offerFresh, windowFresh, windowAfter } = await import("../background.js");
 const { b64u, hkdf, hmac, open, seal, unb64u } = await import("../crypto.js");
 
 const ask = (m, sender) => new Promise((ok) => { listener(m, sender, ok) || ok(undefined); });
@@ -389,4 +389,77 @@ test("the relay must be an https origin, and its token rides in the QR only when
   await _test.register();
   assert.ok(!removed.includes(RELAY_PERM));
   store.offer = undefined;
+});
+
+// Review 2026-10-27: a held code is this pairing's and this account's only, and goes with an unpair.
+test("held codes are bound to the pairing and the account, and an unpair drops them", async () => {
+  const now = 1_000_000_040_000;
+  const h = { ...heldCodes({ account: "w", codes: [{ code: "111111", from: 1_000_000_020, until: 1_000_000_050 }] }, now), site: "github.com", pid: "P".repeat(22), user: "w" };
+  assert.equal(heldFor(h, "github.com", "P".repeat(22), "w", now)?.code, "111111");
+  assert.equal(heldFor(h, "github.com", "P".repeat(22), "", now)?.code, "111111");      // the page names no one: the held account
+  // Codex's reproduction: approved with an empty hint (the phone picked Alice), then the code page names Bob.
+  const blind = { ...h, user: "" };
+  assert.equal(heldFor(blind, "github.com", "P".repeat(22), "bob", now), null);
+  assert.equal(heldFor(blind, "github.com", "P".repeat(22), "", now)?.code, "111111");
+  assert.equal(heldFor(h, "github.com", "Q".repeat(22), "w", now), null);              // another pairing
+  assert.equal(heldFor(h, "github.com", undefined, "w", now), null);                   // unpaired
+  assert.equal(heldFor(h, "github.com", "P".repeat(22), "other", now), null);           // another account
+  assert.equal(heldFor({ ...h, pid: undefined }, "github.com", "P".repeat(22), "w", now), null);
+  _test.held.set(99, h);
+  await _test.options({ t: "unpair" });
+  assert.equal(_test.held.size, 0);
+  store.pairing = pairing();
+});
+
+test("an authenticator code whose period ended on the way is never typed in", async () => {
+  store.pairing = pairing();
+  const r = await ask({ t: "ask", user: "w" }, page("doc-X1"));
+  replyBlob = await phoneReply(r.rid, { ok: true, code: "287082", account: "w", ttl: 2, until: Math.floor(Date.now() / 1000) - 1 }, 1);
+  assert.deepEqual(await ask({ t: "wait", rid: r.rid }, page("doc-X1")), { done: true, ok: false, why: "expired code" });
+  const r2 = await ask({ t: "ask", user: "w" }, page("doc-X2"));
+  replyBlob = await phoneReply(r2.rid, { ok: true, code: "287082", account: "w", ttl: 20, until: Math.floor(Date.now() / 1000) + 20 }, 2);
+  assert.deepEqual(await ask({ t: "wait", rid: r2.rid }, page("doc-X2")), { done: true, ok: true, code: "287082", account: "w" });
+});
+
+test("a pairing offer lives 10 minutes, then its QR is gone and its hello is refused", async () => {
+  assert.equal(offerFresh({ at: 1000 }, 1000 + 9 * 60000), true);
+  assert.equal(offerFresh({ at: 1000 }, 1000 + 10 * 60000), false);
+  assert.equal(offerFresh({}, 1000), false);
+  delete store.pairing;
+  await _test.options({ t: "offer", name: "L", relay: RELAY });
+  assert.equal((await _test.options({ t: "status" })).pending, true);
+  hello = await phoneHello();
+  store.offer.at -= 11 * 60000;
+  const s = await _test.options({ t: "status" });
+  assert.equal(s.pending, false);
+  assert.equal(s.qr, undefined);
+  assert.equal(store.offer, undefined);
+  assert.equal((await _test.options({ t: "hello" })).paired, false);
+  assert.equal(store.pairing, undefined);
+  store.pairing = pairing();
+});
+
+// Codex's reproduction (review 2026-10-27): two replies that cross on the way; the later counter arrives first.
+test("replies that arrive out of order are both taken, each once", async () => {
+  store.pairing = pairing();
+  const r1 = await ask({ t: "ask", user: "w" }, page("doc-O1"));
+  const r2 = await ask({ t: "ask", user: "w" }, page("doc-O2"));
+  const until = Math.floor(Date.now() / 1000) + 20;
+  const b1 = await phoneReply(r1.rid, { ok: true, code: "111111", account: "w", ttl: 20, until }, 1);
+  const b2 = await phoneReply(r2.rid, { ok: true, code: "222222", account: "w", ttl: 20, until }, 2);
+  replyBlob = b2;
+  assert.equal((await ask({ t: "wait", rid: r2.rid }, page("doc-O2"))).code, "222222");
+  replyBlob = b1;
+  assert.equal((await ask({ t: "wait", rid: r1.rid }, page("doc-O1"))).code, "111111");
+  assert.equal(store.pairing.recv, 2);
+  // The same counter again is a replay.
+  const r3 = await ask({ t: "ask", user: "w" }, page("doc-O3"));
+  replyBlob = await phoneReply(r3.rid, { ok: true, code: "333333", account: "w", ttl: 20, until }, 1);
+  assert.equal((await ask({ t: "wait", rid: r3.rid }, page("doc-O3"))).ok, false);
+  // The window: gaps below the highest, only WINDOW back; a pairing saved before (no gaps) stays strict.
+  assert.deepEqual(windowAfter(5, 2), { recv: 5, gaps: [3, 4] });
+  assert.deepEqual(windowAfter(3, 5, [3, 4]), { recv: 5, gaps: [4] });
+  assert.equal(windowFresh(3, 5, [4]), false);
+  assert.equal(windowFresh(1, 2), false);
+  assert.equal(windowAfter(100, 2).gaps.length, 31);
 });

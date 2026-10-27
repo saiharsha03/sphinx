@@ -43,8 +43,8 @@ android {
         applicationId = "dev.sphinx"
         minSdk = 31
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
         firebase.forEach { (k, v) -> resValue("string", k, v) }
         // Where a new phone looks for the backup (Restore offers it, editable): local.properties sphinx.relay, else empty (typed on the phone).
         resValue("string", "sphinx_relay", setting("sphinx.relay", "SPHINX_RELAY") ?: "")
@@ -71,6 +71,9 @@ android {
     }
 
     buildFeatures { compose = true; resValues = true }
+    // Screenshot path: Robolectric renders the screens to PNG (app/build/shots). Every screen is FLAG_SECURE, so the
+    // phone's own screenshots are black. Test-only.
+    testOptions { unitTests.isIncludeAndroidResources = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -107,4 +110,7 @@ dependencies {
     // Argon2id for the backup passcode (memory-hard). Bouncy Castle's provider jar, pinned and hash-checked like the rest.
     implementation("org.bouncycastle:bcprov-jdk18on:1.80")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.15.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

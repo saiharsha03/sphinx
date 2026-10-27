@@ -2,6 +2,7 @@ package dev.sphinx
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -10,6 +11,34 @@ import java.io.File
 
 /** Handoff on the phone: the same rules and chunk format as the extension, its own counter, nothing acted on unchecked. */
 class HandoffTest {
+    @Test fun aSharingAppNamedOnlyByItsOwnReferrerIsMarkedUnverified() {
+        assertEquals("Files", SharedBy.label("Files", verified = true))
+        assertEquals("Files (unverified)", SharedBy.label("Files", verified = false))
+    }
+
+    @Test fun onlyAFileTheSharingAppGrantedIsRead() {
+        val u = "content://com.example.files/doc/1"
+        assertEquals(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION, HandoffRules.GRANT_READ)
+        assertTrue(HandoffRules.granted(HandoffRules.GRANT_READ, u, listOf(u)))
+        // No grant on the intent (Sphinx's own access would read it), or the grant for another URI: refused.
+        assertFalse(HandoffRules.granted(0, u, listOf(u)))
+        assertFalse(HandoffRules.granted(HandoffRules.GRANT_READ, u, listOf("content://com.example.files/doc/2")))
+        assertFalse(HandoffRules.granted(HandoffRules.GRANT_READ, u, emptyList()))
+    }
+
+    @Test fun onlyAnotherAppsContentUriIsRead() {
+        assertTrue(HandoffRules.shareable("content", "com.example.files.provider", "dev.sphinx"))
+        // A file path is read as Sphinx itself: its own backup/key.bin. Refused, as are Sphinx's own providers.
+        assertFalse(HandoffRules.shareable("file", null, "dev.sphinx"))
+        assertFalse(HandoffRules.shareable("file", "", "dev.sphinx"))
+        assertFalse(HandoffRules.shareable("content", "dev.sphinx.androidx-startup", "dev.sphinx"))
+        assertFalse(HandoffRules.shareable("content", "dev.sphinx", "dev.sphinx"))
+        assertFalse(HandoffRules.shareable("content", "com.example.a;dev.sphinx.firebaseinitprovider", "dev.sphinx"))
+        assertFalse(HandoffRules.shareable("content", null, "dev.sphinx"))
+        assertFalse(HandoffRules.shareable(null, "com.example", "dev.sphinx"))
+        assertTrue(HandoffRules.shareable("CONTENT", "dev.sphinxer.files", "dev.sphinx"))
+    }
+
     private val v = json.readTree(File("../extension/test/vectors.json"))
     private val now = 1_800_000_000_000L - 50_000
     private val pairing = Pairing("P".repeat(22), "Work laptop", ByteArray(32) { 1 }, ByteArray(32) { 2 }, "https://relay.example.com", ByteArray(32) { 3 }, added = now)

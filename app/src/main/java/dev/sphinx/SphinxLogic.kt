@@ -17,7 +17,32 @@ data class Pending(
     val textOnly: Boolean = false,
     /** A pre-approval (code.ready): his fingerprint opens a [Primed] window for the code that follows; no code goes back now. */
     val ready: Boolean = false,
-)
+) {
+    /** Its id among the waiting requests: the pairing and the laptop's rid together (another pairing may pick the same rid). */
+    val waitId: String get() = "$pid/$rid"
+}
+
+/**
+ * The requests waiting for his answer, by [key] (pairing and rid). A second request under a key that waits is refused,
+ * never put in place of the first, and an answer takes exactly the request the screen showed (review 2026-10-27: an
+ * approval must not land on a request another pairing slipped in under the same rid).
+ */
+class Waiting<T : Any>(private val key: (T) -> String) {
+    private val m = java.util.concurrent.ConcurrentHashMap<String, T>()
+
+    /** False when one already waits under its key (it stays). */
+    fun add(x: T): Boolean = m.putIfAbsent(key(x), x) == null
+
+    operator fun get(k: String): T? = m[k]
+
+    /** Takes [shown] if it is still the very request waiting under its key. */
+    @Synchronized fun take(shown: T): Boolean = (m[key(shown)] === shown).also { if (it) m.remove(key(shown)) }
+
+    fun remove(k: String): T? = m.remove(k)
+
+    val values: Collection<T> get() = m.values
+    fun isEmpty(): Boolean = m.isEmpty()
+}
 
 /**
  * His fingerprint on a code.ready (owner, 2026-10-26: "prefetch the code ... when password is being entered"): for one
@@ -42,6 +67,42 @@ class PreApproval {
     @Synchronized fun close(now: Long) { if (w?.let { it.until <= now } == true) w = null }
 }
 
+/**
+ * One texted code offered for one waiting request ([id] its waitId). [gen] makes each offer its own: a newer text for
+ * the same request is a new offer, and an answer sends exactly the offer its prompt showed (review 2026-10-27: a text
+ * arriving during the prompt swapped the code that went out).
+ */
+data class TextOffer(val id: String, val code: String, val gen: Long)
+
+class TextOffers {
+    private val m = java.util.concurrent.ConcurrentHashMap<String, TextOffer>()
+    private val n = java.util.concurrent.atomic.AtomicLong()
+
+    fun offer(id: String, code: String): TextOffer = TextOffer(id, code, n.incrementAndGet()).also { m[id] = it }
+    operator fun get(id: String): TextOffer? = m[id]
+    /** Takes [o] only if it is still the offer for its request: true once, for exactly that code. */
+    fun take(o: TextOffer): Boolean = m.remove(o.id, o)
+    fun drop(id: String): TextOffer? = m.remove(id)
+    fun keep(f: (String) -> Boolean) { m.keys.removeAll { !f(it) } }
+}
+
+/**
+ * The replay window (review 2026-10-27): a request's sealed counter is taken if it is above the highest seen, or one
+ * skipped below it ([Pairing.gaps], at most [SIZE] back) and not yet seen. Requests the laptop posted out of order both
+ * arrive; each still only once. A pairing saved before has no gaps: strict, as it was.
+ */
+object ReplayWindow {
+    const val SIZE = 32
+
+    fun floor(recv: Long): Long = maxOf(0L, recv - SIZE)
+
+    fun fresh(ctr: Long, recv: Long, gaps: List<Long>): Boolean = ctr > recv || ctr in gaps
+
+    fun after(ctr: Long, recv: Long, gaps: List<Long>): Pair<Long, List<Long>> =
+        if (ctr <= recv) recv to gaps.filter { it != ctr }
+        else ctr to (gaps + (maxOf(recv + 1, ctr - SIZE + 1) until ctr)).filter { it > ctr - SIZE }
+}
+
 /** What the phone does with one blob from the relay. */
 sealed class Decision {
     /** Couldn't be opened or read (bad seal, replay, expired, bad JSON): logged, no reply (there is no one to trust). */
@@ -52,6 +113,8 @@ sealed class Decision {
     data class Ask(val pairing: Pairing, val pending: Pending) : Decision()
     /** A link, text or file from the laptop (handoff.send): shown with Open / Copy, never acted on without a tap. */
     data class Handoff(val pairing: Pairing, val rid: String, val item: HandoffItem) : Decision()
+    /** The release signer asks to sign (sign.approve): needs his fingerprint, which opens the unlock secret. */
+    data class Sign(val pairing: Pairing, val ask: SignAsk) : Decision()
 }
 
 /**
@@ -60,7 +123,7 @@ sealed class Decision {
  * the code or a refusal. The phone matches the host again here (Domains.matches), whatever the laptop thought.
  *
  * Every message is one typed envelope, sealed whole: `{"v": 1, "kind": "<area>.<verb>", "rid": "...", "body": {...}}`.
- * Kinds today: code.request / code.reply, code.ready / code.ready.reply, domains.request / domains.reply. One pairing carries every kind; the ones
+ * Kinds today: code.request / code.reply, code.ready / code.ready.reply, domains.request / domains.reply, and from the release signer's pairing only, sign.approve / sign.approve.reply (docs/DESIGN.md, Release signing). One pairing carries every kind; the ones
  * planned on it (tab.send, sms.code, clip.push, clip.send, presence, call.ring) are refused
  * as "unsupported kind" until each is built and reviewed (docs/DESIGN.md). Laptop to phone is direction 'q', phone to
  * laptop 'r', each with its own counter, whatever the kind.
@@ -87,17 +150,30 @@ object SphinxLogic {
      * the extension asks there under the same tab, frame and origin rules, and a request for one waits (textOnly) for an
      * SMS or email code he sends with his fingerprint (owner, 2026-10-25).
      */
-    fun decide(p: Pairing, rid: String, blob: String, accounts: List<CodeAccount>, now: Long, lastPick: (String) -> String? = { null }, textSites: List<String> = emptyList()): Decision {
-        val o = SphinxCrypto.open(p.l2p, p.pid, 'q', blob, p.recv, now)
+    fun decide(p: Pairing, rid: String, blob: String, accounts: List<CodeAccount>, now: Long, lastPick: (String) -> String? = { null }, textSites: List<String> = emptyList(),
+               enrolled: Boolean = false): Decision {
+        val o = SphinxCrypto.open(p.l2p, p.pid, 'q', blob, ReplayWindow.floor(p.recv), now)
         if (o is Opened.No) return Decision.Drop(o.why)
         o as Opened.Ok
-        val seen = p.copy(recv = o.ctr, lastUsed = now)
+        if (!ReplayWindow.fresh(o.ctr, p.recv, p.gaps)) return Decision.Drop("replay")
+        val (recv, gaps) = ReplayWindow.after(o.ctr, p.recv, p.gaps)
+        val seen = p.copy(recv = recv, gaps = gaps, lastUsed = now)
         val n = runCatching { json.readTree(o.plain) }.getOrNull()?.takeIf { it.isObject } ?: return Decision.Drop("unreadable")
         if (n.path("v").asInt() != V) return Decision.Drop("envelope version")
         // The rid inside the seal must be the one outside it: the relay can't move a sealed request onto another id.
         if (n.path("rid").asText() != rid) return Decision.Drop("rid mismatch")
         val body = n.path("body")
-        return when (n.path("kind").asText()) {
+        val kind = n.path("kind").asText()
+        // The release signer's pairing asks for signing and nothing else; no other pairing may ask for it (docs/DESIGN.md, Release signing).
+        if (p.signer || kind == SigningRules.KIND) {
+            if (!p.signer || kind != SigningRules.KIND)
+                return Decision.Answer(seen, rid, envelope("error", rid, mapOf("ok" to false, "why" to "unsupported kind")), "refused an unsupported kind")
+            val ask = SigningRules.ask(rid, p, body, minOf(o.exp, now + SphinxCrypto.TTL_MS))
+                ?: return Decision.Answer(seen, rid, SigningRules.no(rid, "bad request"), "refused a bad sign request")
+            if (!enrolled) return Decision.Answer(seen, rid, SigningRules.no(rid, "no unlock secret on the phone"), "sign request: no unlock secret here")
+            return Decision.Sign(seen, ask)
+        }
+        return when (kind) {
             // The sites, and which sit together on one account (so the laptop can require tab and frame on the same one). No names.
             "domains.request" -> Decision.Answer(seen, rid, envelope("domains.reply", rid, mapOf(
                 "ok" to true, "domains" to (accounts.flatMap { it.domains } + textSites).distinct().sorted().take(MAX_DOMAINS),
@@ -213,15 +289,24 @@ object SphinxLogic {
     fun rides(pending: Collection<Pending>, r: Pending, now: Long): Boolean = !r.ready && !r.textOnly &&
         pending.any { it.ready && it.expires > now && it.pid == r.pid && Domains.site(it.host) == Domains.site(r.host) }
 
-    fun code(rid: String, a: CodeAccount, code: String, left: Int): Map<String, Any?> =
-        envelope("code.reply", rid, mapOf("ok" to true, "code" to code, "account" to a.name.ifBlank { a.issuer }, "ttl" to left))
+    /**
+     * A code made at [now]: [ttl] seconds left, and `until`, the unix second its period ends, so the laptop drops a code
+     * that arrives after it changed instead of typing and submitting a dead one (review 2026-10-27).
+     */
+    fun code(rid: String, a: CodeAccount, code: String, now: Long): Map<String, Any?> {
+        val left = Totp.left(now, a.period)
+        return envelope("code.reply", rid, mapOf("ok" to true, "code" to code, "account" to a.name.ifBlank { a.issuer }, "ttl" to left, "until" to now / 1000 + left))
+    }
 
     /** A code from an SMS or email he sent with his fingerprint: `via: "text"` tells the laptop to type it and not submit. */
     fun texted(rid: String, code: String): Map<String, Any?> =
         envelope("code.reply", rid, mapOf("ok" to true, "code" to code, "account" to "", "via" to "text"))
 
-    /** The newest laptop request still waiting at [now], for a texted code to answer (any site: he sees which one). */
-    fun forText(pending: Collection<Pending>, now: Long): Pending? = pending.filter { it.expires > now }.maxByOrNull { it.expires }
+    /**
+     * The newest laptop code request still waiting at [now], for a texted code to answer (any site: he sees which one).
+     * Never a pre-approval (code.ready): it takes no code, and its riders would be left waiting (review 2026-10-27).
+     */
+    fun forText(pending: Collection<Pending>, now: Long): Pending? = pending.filter { it.expires > now && !it.ready }.maxByOrNull { it.expires }
 
     /**
      * A handoff to the laptop, sealed in the phone-push direction 'p' with its own counter ([Pairing.pushSent]), so it

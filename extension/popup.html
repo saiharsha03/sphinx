@@ -4,48 +4,48 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sphinx</title>
+<link rel="stylesheet" href="theme.css">
 <style>
-  :root { --surface: #1c1916; --raised: #26221d; --ink: #f3ead9; --ink2: #c9bfae; --ink3: #8f8576; --rule: #3a342c; --accent: #e8a33d; --onaccent: #1c1916; --alert: #f2876f; }
-  @media (prefers-color-scheme: light) { :root { --surface: #f7f2e8; --raised: #efe7d8; --ink: #24201b; --ink2: #4a433a; --ink3: #7d7366; --rule: #ddd2bf; --accent: #b8741a; --onaccent: #fff; --alert: #b3261e; } }
-  body { margin: 0; background: var(--surface); color: var(--ink); font: 14px/20px system-ui, sans-serif; min-width: 340px; }
-  main { max-width: 560px; margin: 0 auto; padding: 16px; }
-  .kicker { font-size: 11px; letter-spacing: 1.3px; text-transform: uppercase; color: var(--ink3); }
-  section { border-top: 1px solid var(--rule); padding: 12px 0; }
-  section:first-of-type { border-top: 0; padding-top: 4px; }
-  .muted { color: var(--ink3); font-size: 13px; }
-  .problem { color: var(--alert); font-size: 13px; }
-  button { font: 500 14px/18px system-ui, sans-serif; min-height: 36px; padding: 0 14px; border-radius: 18px; border: 0; cursor: pointer; }
-  .primary { background: var(--accent); color: var(--onaccent); }
-  .text { background: none; color: var(--ink); padding: 0 6px; }
-  textarea { font: inherit; color: var(--ink); background: var(--raised); border: 0; border-radius: 8px; padding: 8px; width: 100%; box-sizing: border-box; min-height: 56px; resize: vertical; }
-  textarea:focus { outline: 2px solid var(--accent); }
-  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-  .item { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--rule); }
-  .item:first-child { border-top: 0; }
-  .item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  a { color: var(--ink3); }
+  body { min-width: 340px; }
+  main { max-width: 560px; margin: 0 auto; padding: 14px; }
+  main > section:first-of-type { margin-top: 14px; }
+  .item { display: flex; gap: 6px; align-items: center; padding: 10px 12px; min-height: 46px; }
+  .item + .item { border-top: 1px solid var(--hair-soft); }
+  .item span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; font-size: 14px; }
+  .item button { min-height: 32px; padding: 0 14px; font-size: 13px; }
+  #items:empty { display: none; }
+  #items:not(:empty) + #empty { display: none; }
+  #said:empty { display: none; }
+  .pair { display: flex; gap: 8px; margin-top: 8px; }
+  .pair button { flex: 1; min-height: 40px; font-size: 14px; }
+  .foot { text-align: center; margin-top: 16px; }
 </style>
 </head>
 <body>
 <main>
-  <section>
-    <div class="kicker">From your phone</div>
-    <div id="items"></div>
-    <p class="muted" id="empty">Nothing waiting. What the phone sends shows here; nothing opens until you click.</p>
-  </section>
+  <div class="wordmark"><svg class="mk" viewBox="0 112 200 76" aria-hidden="true"><path d="M6 184 C26 172 52 168 74 170 L90 150 C94 132 108 120 126 122 C140 124 148 136 146 150 L154 160 C166 162 178 168 188 176 L196 184Z"/><circle class="mk-eye" cx="129" cy="137" r="4"/></svg>Sphinx</div>
   <section id="send">
-    <div class="kicker">To your phone</div>
-    <div class="row"><button class="primary" id="continue">Open this page on my phone</button></div>
-    <textarea id="note" maxlength="3000" placeholder="A note or some text for the phone"></textarea>
-    <div class="row">
-      <button class="text" id="sendNote">Send text</button>
-      <button class="text" id="pick">Send a file…</button>
+    <span class="label">To your phone</span>
+    <button class="primary wide" id="continue">Open this page on my phone</button>
+    <textarea id="note" maxlength="3000" placeholder="A note or some text for the phone" style="margin-top:10px"></textarea>
+    <div class="pair">
+      <button class="secondary" id="sendNote">Send text</button>
+      <button class="secondary" id="pick">Send a file…</button>
       <input type="file" id="file" hidden>
     </div>
-    <p class="muted" id="said"></p>
+    <p class="muted" id="said" style="margin-top:8px"></p>
   </section>
-  <p class="muted" id="unpaired" hidden>Not paired yet. <a href="options.html" target="_blank">Open the options</a> to pair.</p>
-  <p class="muted"><a href="options.html" target="_blank">Options</a></p>
+  <section>
+    <span class="label">From your phone</span>
+    <div class="group">
+      <div id="items"></div>
+      <p class="muted pad" id="empty">Nothing waiting. What the phone sends shows here; nothing opens until you click.</p>
+    </div>
+  </section>
+  <section id="unpaired" hidden>
+    <div class="group"><p class="muted pad">Not paired yet. <a href="options.html" target="_blank">Open the options</a> to pair.</p></div>
+  </section>
+  <p class="muted foot"><a href="options.html" target="_blank">Options</a></p>
 </main>
 <script type="module" src="popup.js"></script>
 </body>

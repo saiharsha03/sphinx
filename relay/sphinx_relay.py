@@ -6,8 +6,8 @@ was only ever in the pairing QR; the relay key is a separate HKDF output of that
 No site, user name or code is ever here in the clear, and nothing about a blob is logged beyond its pairing's first
 6 characters.
 
-Registering a pairing is the only unsigned call (optionally gated by SPHINX_REGISTER_TOKEN); a pid can't be taken
-over once registered. Every other call, the phone's and the laptop's alike, proves itself with HMAC-SHA256 under the
+Registering a pairing is the only unsigned call (gated by SPHINX_REGISTER_TOKEN, which the relay requires to start
+unless SPHINX_INSECURE_DEV=1); a pid can't be taken over once registered. Every other call, the phone's and the laptop's alike, proves itself with HMAC-SHA256 under the
 pairing's relay key:
   x-sphinx-pid, x-sphinx-ts (unix seconds, within 60 s), x-sphinx-nonce (16-32 url-safe chars, single use),
   x-sphinx-sig = b64url(HMAC(key, "METHOD\\npath\\nquery\\nts\\nnonce\\nsha256hex(body)"))
@@ -101,15 +101,13 @@ def sign(key: bytes, method: str, path: str, query: str, ts: str, nonce: str, bo
 
 
 def carry(queued: list[dict]) -> str | None:
-    """The wake's "sphinx" value: the queued blobs, newest first, as many as fit in CARRY_MAX, as compact JSON
-    [{pid, rid, blob}]; None when not even the newest fits (the wake is a plain "sync" and the phone fetches)."""
-    out: list[dict] = []
-    for b in sorted(queued, key=lambda b: b["at"], reverse=True):
-        more = out + [{"pid": b["pid"], "rid": b["rid"], "blob": b["blob"]}]
-        if len(json.dumps(more, separators=(",", ":"))) > CARRY_MAX:
-            break
-        out = more
-    return json.dumps(out, separators=(",", ":")) if out else None
+    """The wake's "sphinx" value: every queued blob, oldest first, as compact JSON [{pid, rid, blob}], or None when they
+    don't all fit in CARRY_MAX (the wake is a plain "sync" and the phone fetches the inbox, oldest first). Each sealed
+    counter must arrive in order: a newer one handled first made the older one a "replay" that was acked away
+    (review 2026-10-27), so it is all of them in order or none."""
+    out = [{"pid": b["pid"], "rid": b["rid"], "blob": b["blob"]} for b in sorted(queued, key=lambda b: b["at"])]
+    s = json.dumps(out, separators=(",", ":"))
+    return s if out and len(s) <= CARRY_MAX else None
 
 
 def fcm_payload(token: str, sphinx: str | None) -> dict:
@@ -511,15 +509,21 @@ SLOT = re.compile(r"^(pass|[A-Za-z0-9_-]{43})$")
 AUTH = re.compile(r"^[A-Za-z0-9_-]{43}$")          # 32 bytes, b64url
 BACKUP_BLOB_MAX = 8_000_000                        # chars of b64url: a 4 MB Keys safe and the accounts, with room to spare
 BACKUP_BODY_MAX = BACKUP_BLOB_MAX + 4_096
-# The attempt guard. A wrong auth on any backup route is a guess at the passcode. These limits are what stands between an
-# online attacker and the passcode: each client IP gets PER_IP_FREE free tries, then waits 30 s doubling per failure (up
-# to a day); all IPs together get GLOBAL_FREE, then a minute doubling; after GLOBAL_LOCK failures in a row the backup is
-# locked until someone with the VPS removes the lock file (`rm <SPHINX_BACKUP_DIR>/backup.locked`). A right answer
-# resets that IP's and the global count. Counts survive a restart (backup-guard.json). Offline, someone holding the
-# VPS's backup file is limited only by the passcode's strength and Argon2id's cost (docs/DESIGN.md says so).
+# The attempt guard. A wrong auth on any backup route is a guess at that slot's secret. These limits are what stands
+# between an online attacker and the passcode: each client IP gets PER_IP_FREE free tries, then waits 30 s doubling per
+# failure (up to a day); all IPs together get GLOBAL_FREE per slot, then a minute doubling; after GLOBAL_LOCK failures
+# in a row that slot is locked until someone with the VPS removes its lock file (`rm <SPHINX_BACKUP_DIR>/backup.<slot>.locked`;
+# a `backup.locked` from before locks every slot). Per slot (review 2026-10-27): guesses at one slot can't lock another.
+# A right answer resets that IP's and that slot's count. Counts survive a restart (backup-guard.json). Every backup route
+# needs the relay's registration token or a paired phone's signature first, so a stranger can't even make a guess.
+# Offline, someone holding the VPS's backup file is limited only by the passcode's strength and Argon2id's cost
+# (docs/DESIGN.md says so).
 PER_IP_FREE, PER_IP_WAIT_S = 3, 30
 GLOBAL_FREE, GLOBAL_WAIT_S = 10, 60
 GLOBAL_LOCK = 25
+# A pairing-signed caller (review 2026-10-27): its own count, apart from the slot's, and after PAIRING_LOCK misses in all
+# that pairing may not try again (persisted; the relay holds at most MAX_PAIRINGS), so online guesses stay bounded.
+PAIRING_LOCK = 10
 WAIT_MAX_S = 24 * 3600
 
 
@@ -531,7 +535,10 @@ class Backup:
         self.slots: dict = self._read("backup.json") or {}
         g = self._read("backup-guard.json") or {}
         self.ips: dict = g.get("ips", {})
-        self.glob: dict = g.get("global", {"n": 0, "at": 0})
+        # Each slot's count; a file from before per-slot counts held one global count, the passcode's.
+        self.guard: dict = g.get("slots") or ({"pass": g["global"]} if g.get("global") else {})
+        # Each pairing-signed caller's misses in all ("pairing:<pid>" -> n), never evicted.
+        self.callers: dict = g.get("pairings", {})
 
     def _path(self, name: str) -> str | None:
         return os.path.join(self.dir, name) if self.dir else None
@@ -550,36 +557,45 @@ class Backup:
                 json.dump(data, fh)
             os.replace(p + ".tmp", p)
 
-    def locked(self) -> bool:
-        p = self._path("backup.locked")
-        if p and os.path.exists(p):
+    def count(self, slot: str) -> dict:
+        return self.guard.get(slot, {"n": 0, "at": 0})
+
+    def _lock_file(self, slot: str) -> str | None:
+        return self._path(f"backup.{slot}.locked")
+
+    def locked(self, slot: str) -> bool:
+        legacy, p = self._path("backup.locked"), self._lock_file(slot)
+        if (legacy and os.path.exists(legacy)) or (p and os.path.exists(p)):
             return True
-        if self.glob["n"] >= GLOBAL_LOCK and p:
+        if self.count(slot)["n"] >= GLOBAL_LOCK and p:
             # The lock file was removed on the VPS: that is the reset.
-            self.glob = {"n": 0, "at": 0}
+            self.guard.pop(slot, None)
             self._save_guard()
-        return not p and self.glob["n"] >= GLOBAL_LOCK
+        return not p and self.count(slot)["n"] >= GLOBAL_LOCK
 
     def _save_guard(self) -> None:
-        self._write("backup-guard.json", {"ips": self.ips, "global": self.glob})
+        self._write("backup-guard.json", {"ips": self.ips, "slots": self.guard, "pairings": self.callers})
 
     @staticmethod
     def _wait(n: int, free: int, base: int) -> int:
         return 0 if n < free else min(WAIT_MAX_S, base * 2 ** (n - free))
 
-    def check(self, ip: str) -> None:
-        """Before a guess: 423 when locked, 429 (with Retry-After) while this IP or everyone must wait."""
+    def check(self, ip: str, slot: str, shared: bool = True) -> None:
+        """Before a guess: 423 when the slot is locked, 429 (with Retry-After) while this IP or everyone must wait for it.
+        [shared] False (a pairing-signed caller): only its own count applies, not the slot's."""
         with self.lock:
-            if self.locked():
+            if self.locked(slot):
                 raise HTTPException(423, "backup locked: reset on the VPS")
+            if not shared and self.callers.get(ip, 0) >= PAIRING_LOCK:
+                raise HTTPException(423, "this pairing may not try again: reset on the VPS")
             now = self.now()
-            e = self.ips.get(ip, {"n": 0, "at": 0})
+            e, g = self.ips.get(ip, {"n": 0, "at": 0}), (self.count(slot) if shared else {"n": 0, "at": 0})
             left = max(e["at"] + self._wait(e["n"], PER_IP_FREE, PER_IP_WAIT_S) - now,
-                       self.glob["at"] + self._wait(self.glob["n"], GLOBAL_FREE, GLOBAL_WAIT_S) - now)
+                       g["at"] + self._wait(g["n"], GLOBAL_FREE, GLOBAL_WAIT_S) - now)
             if left > 0:
                 raise HTTPException(429, "too many wrong tries: wait", headers={"Retry-After": str(int(left) + 1)})
 
-    def failed(self, ip: str) -> None:
+    def failed(self, ip: str, slot: str, shared: bool = True) -> None:
         with self.lock:
             now = self.now()
             e = self.ips.get(ip, {"n": 0, "at": 0})
@@ -587,31 +603,38 @@ class Backup:
             if len(self.ips) > 1000:   # bounded: the oldest IP entries go, the global count stays
                 for k in sorted(self.ips, key=lambda k: self.ips[k]["at"])[:100]:
                     del self.ips[k]
-            self.glob = {"n": self.glob["n"] + 1, "at": now}
-            if self.glob["n"] >= GLOBAL_LOCK and self._path("backup.locked"):
-                with open(self._path("backup.locked"), "w", encoding="utf-8") as fh:
-                    fh.write(f"locked after {self.glob['n']} wrong tries at {int(now)}; remove this file to unlock\n")
+            if not shared:
+                # A pairing-signed caller's misses count against it alone, never toward the slot's lock (review
+                # 2026-10-27: any pairing, the Signer's too, could otherwise burn the owner's guesses), and lock it
+                # for good at PAIRING_LOCK.
+                self.callers[ip] = self.callers.get(ip, 0) + 1
+                self._save_guard()
+                return
+            g = {"n": self.count(slot)["n"] + 1, "at": now}
+            self.guard[slot] = g
+            if g["n"] >= GLOBAL_LOCK and self._lock_file(slot):
+                with open(self._lock_file(slot), "w", encoding="utf-8") as fh:
+                    fh.write(f"locked after {g['n']} wrong tries at {int(now)}; remove this file to unlock\n")
             self._save_guard()
 
     def ok(self, ip: str, slot: str) -> None:
-        # Only the passcode slot clears the global count: a success on another slot (a phrase slot made with the
-        # registration token, which a laptop holds) must not reset the guesses against the passcode (review 2026-10-26).
+        # A success clears that slot's count only: one on another slot (a phrase slot) never resets the guesses against
+        # the passcode (review 2026-10-26).
         with self.lock:
             self.ips.pop(ip, None)
-            if slot == "pass":
-                self.glob = {"n": 0, "at": 0}
+            self.guard.pop(slot, None)
             self._save_guard()
 
     def _match(self, slot: str, auth: str) -> bool:
         e = self.slots.get(slot)
         return e is not None and hmac.compare_digest(e["verifier"], hashlib.sha256(auth.encode()).hexdigest())
 
-    def guarded(self, ip: str, slot: str, auth: str) -> dict:
+    def guarded(self, ip: str, slot: str, auth: str, shared: bool = True) -> dict:
         """The slot when [auth] is its auth value; every miss is a counted guess (404 and 401 alike)."""
-        self.check(ip)
+        self.check(ip, slot, shared)
         with self.lock:
             if not self._match(slot, auth):
-                self.failed(ip)
+                self.failed(ip, slot, shared)
                 raise HTTPException(401, "wrong passcode or phrase")
             self.ok(ip, slot)
             return self.slots[slot]
@@ -636,6 +659,9 @@ class BackupPut(BaseModel):
     salt: str | None = Field(default=None, max_length=64)
     kdf: dict | None = None
     blob: str = Field(min_length=24, max_length=BACKUP_BLOB_MAX)
+    # False: update only, a slot that is gone stays gone (404). The phone's routine uploads send false, so a stale copy
+    # of its settings can't bring a removed slot (a recovery phrase turned off) back (review 2026-10-27).
+    create: bool = True
 
 
 class BackupAuth(BaseModel):
@@ -652,10 +678,17 @@ def client_ip(request: Request) -> str:
     return peer
 
 
-def create_app(relay: Relay | None = None, register_token: str | None = None, backup: Backup | None = None) -> FastAPI:
+def create_app(relay: Relay | None = None, register_token: str | None = None, backup: Backup | None = None,
+               insecure_dev: bool | None = None) -> FastAPI:
+    token = os.environ.get("SPHINX_REGISTER_TOKEN", "") if register_token is None else register_token
+    insecure = os.environ.get("SPHINX_INSECURE_DEV") == "1" if insecure_dev is None else insecure_dev
+    # Fail closed (review 2026-10-27): without a registration token anyone could register pairings and reach the backup
+    # routes. Only an explicit SPHINX_INSECURE_DEV=1 (local testing) runs it open.
+    if not token and not insecure:
+        raise RuntimeError("SPHINX_REGISTER_TOKEN is not set: the relay won't run open. Set it (deploy/install.sh does), "
+                           "or SPHINX_INSECURE_DEV=1 for local testing only.")
     relay = relay or Relay(FileStore(os.environ.get("SPHINX_STATE", "sphinx-relay.json")),
                            fcm=Fcm(os.environ.get("SPHINX_FCM_ACCOUNT") or None, audit))
-    token = os.environ.get("SPHINX_REGISTER_TOKEN", "") if register_token is None else register_token
     backup = backup or Backup(os.environ.get("SPHINX_BACKUP_DIR") or os.path.dirname(os.path.abspath(os.environ.get("SPHINX_STATE", "sphinx-relay.json"))))
     app = FastAPI(title="Sphinx relay", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.relay = relay
@@ -811,23 +844,40 @@ def create_app(relay: Relay | None = None, register_token: str | None = None, ba
         if not SLOT.match(slot):
             raise HTTPException(400, "bad slot")
 
+    def caller_ok(request: Request, body: bytes) -> tuple[str, bool]:
+        """Every backup route: the relay's registration token, or a paired phone's signature (review 2026-10-27:
+        unauthenticated, anyone could make guesses and lock the backup). Not a counted guess. Only a relay started with
+        SPHINX_INSECURE_DEV=1 has no token, and then every caller passes as a token holder.
+        Returns who counts the guesses and whether they count toward the slot: the client IP for a token holder (and on
+        a relay without a token); a pairing's own key, apart from the slot's count, for a signed caller."""
+        if not token or hmac.compare_digest(request.headers.get("x-sphinx-token", "").encode(), token.encode()):
+            return client_ip(request), True
+        try:
+            pid = relay.verify(request.method, request.url.path, request.url.query, request.headers, body)
+        except HTTPException:
+            raise HTTPException(403, "registration token or a paired phone's signature required")
+        return f"pairing:{pid}", False
+
     @app.get("/v1/backup/{slot}/salt")
     def backup_salt(slot: str, request: Request):
         # The passcode's public Argon2id salt and cost, so a new phone can derive its auth value. Counted like a try
         # (it is the first step of one), so the slots can't be probed for free.
         slot_ok(slot)
-        backup.check(client_ip(request))
+        who, shared = caller_ok(request, b"")
+        backup.check(who, slot, shared)
         e = backup.slots.get(slot)
         if e is None or not e.get("salt"):
-            backup.failed(client_ip(request))
+            backup.failed(who, slot, shared)
             raise HTTPException(404, "no backup here")
         return {"salt": e["salt"], "kdf": e.get("kdf")}
 
     @app.post("/v1/backup/{slot}/open")
     async def backup_open(slot: str, request: Request):
         slot_ok(slot)
-        b = parse(BackupAuth, await request.body())
-        e = backup.guarded(client_ip(request), slot, b.auth)
+        body = await request.body()
+        who, shared = caller_ok(request, body)
+        b = parse(BackupAuth, body)
+        e = backup.guarded(who, slot, b.auth, shared)
         audit("backup opened", slot)
         return {"blob": e["blob"], "at": e.get("at")}
 
@@ -841,12 +891,15 @@ def create_app(relay: Relay | None = None, register_token: str | None = None, ba
         body = await request.body()
         if len(body) > BACKUP_BODY_MAX:
             raise HTTPException(413, "too large")
+        who, shared = caller_ok(request, body)
         b = parse(BackupPut, body)
-        ip = client_ip(request)
         if slot in backup.slots:
-            backup.guarded(ip, slot, b.auth)
-        elif token and not hmac.compare_digest(request.headers.get("x-sphinx-token", "").encode(), token.encode()):
-            raise HTTPException(403, "registration token required")
+            backup.guarded(who, slot, b.auth, shared)
+        elif not b.create:
+            raise HTTPException(404, "no backup here")
+        elif not shared:
+            # Creating a slot takes the registration token itself: a pairing (the Signer's, say) can't plant a phrase slot.
+            raise HTTPException(403, "creating a backup slot needs the registration token")
         if slot == "pass" and not b.salt:
             raise HTTPException(400, "the passcode slot needs its salt")
         backup.put(slot, {"verifier": hashlib.sha256((b.new_auth or b.auth).encode()).hexdigest(), "salt": b.salt, "kdf": b.kdf,
@@ -857,8 +910,10 @@ def create_app(relay: Relay | None = None, register_token: str | None = None, ba
     @app.post("/v1/backup/{slot}/delete")
     async def backup_delete(slot: str, request: Request):
         slot_ok(slot)
-        b = parse(BackupAuth, await request.body())
-        backup.guarded(client_ip(request), slot, b.auth)
+        body = await request.body()
+        who, shared = caller_ok(request, body)
+        b = parse(BackupAuth, body)
+        backup.guarded(who, slot, b.auth, shared)
         backup.drop(slot)
         audit("backup removed", slot)
         return {"ok": True}

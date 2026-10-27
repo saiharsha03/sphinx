@@ -68,6 +68,17 @@
    * flight, whatever ended the last one (denied, expired, a code the site turned down): his click is the ask, never held
    * back for a minute (owner, 2026-10-26). The relay's per-pairing rate (10 a minute) is what protects against a loop.
    */
+  /**
+   * Whether a form's action attribute ([action], as written: "" posts to the page itself) resolved against [base]
+   * (document.baseURI) goes to [origin], the page's own: the only form a code is submitted to. The attribute, never
+   * form.action, which an <input name="action"> turns into an element (review 2026-10-27).
+   */
+  function sameOrigin(action, origin, base = origin) {
+    if (typeof action !== "string") return false;
+    if (action.trim() === "") return true;
+    try { return new URL(action, base).origin === origin; } catch { return false; }
+  }
+
   function shouldAsk({ trigger, busy, filled, autoDone }) {
     if (busy) return false;
     if (trigger === "seen") return !autoDone && !filled;
@@ -91,6 +102,6 @@
     return ["input", "change", "submit"].includes(trigger) && trusted === true;
   }
 
-  root.SphinxDetect = { isOtp, isSplit, splitDigits, userHint, words, shouldAsk, shouldReady };
+  root.SphinxDetect = { isOtp, isSplit, splitDigits, userHint, words, shouldAsk, shouldReady, sameOrigin };
   if (typeof module !== "undefined") module.exports = root.SphinxDetect;
 })(typeof globalThis !== "undefined" ? globalThis : this);

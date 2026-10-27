@@ -21,16 +21,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -40,6 +39,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.lifecycleScope
@@ -131,11 +132,14 @@ object Handoff {
     }
 }
 
-/** A notification's Copy: the text to the clipboard, at a tap. */
+/**
+ * A notification's Copy: the text to the clipboard, at a tap, marked sensitive (no clipboard preview or keyboard
+ * suggestion shows it) and cleared after a minute, as a code is (review 2026-10-27: it stayed there for good).
+ */
 class CopyReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
         val text = i.getStringExtra(TEXT) ?: return
-        c.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Sphinx", text))
+        SecureClipboard.copy(c, "text", text, clearMs = 60_000L)
         c.getSystemService(NotificationManager::class.java).cancel(i.getIntExtra(NOTE, 0))
     }
 
@@ -154,7 +158,20 @@ class ShareActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Like every Sphinx screen: no screenshots, no recents preview of what is being sent.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         setContent { SphinxTheme { Screen() } }
+    }
+
+    /**
+     * The app that shared it: what Android says (Android 14 and later, when the app opted in), else the referrer it gave,
+     * which the app sets itself and so is marked "(unverified)" (review 2026-10-27).
+     */
+    private fun sharedBy(): String? {
+        val sure = if (android.os.Build.VERSION.SDK_INT >= 34) launchedFromPackage else null
+        val pkg = (sure ?: referrer?.takeIf { it.scheme == "android-app" }?.host)?.takeIf { it != packageName } ?: return null
+        val name = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
+        return SharedBy.label(name, verified = sure != null)
     }
 
     /** What was shared, or why it can't go. A link shared alone (Chrome's Share) goes as "open on the laptop". */
@@ -162,6 +179,10 @@ class ShareActivity : ComponentActivity() {
         if (intent?.action != Intent.ACTION_SEND) return null to "Nothing to send."
         @Suppress("DEPRECATION") val stream = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
         if (stream != null) {
+            if (!HandoffRules.shareable(stream.scheme, stream.authority, packageName)) return null to "Sphinx sends only files an app shares as content, not a file path."
+            val clip = intent.clipData?.let { cd -> (0 until cd.itemCount).mapNotNull { cd.getItemAt(it).uri?.toString() } }.orEmpty()
+            if (!HandoffRules.granted(intent.flags, stream.toString(), clip))
+                return null to "The sharing app didn't give Sphinx access to that file. Share it from an app that does (Files, Photos)."
             val cr = contentResolver
             var name = "file"; var size = -1L
             cr.query(stream, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cur ->
@@ -191,46 +212,57 @@ class ShareActivity : ComponentActivity() {
 
     @Composable
     private fun Screen() {
-        val c = MaterialTheme.colorScheme
+        val c = Sx.p
         var shared by remember { mutableStateOf<Shared?>(null) }
         var note by remember { mutableStateOf<String?>(null) }
         var laptops by remember { mutableStateOf<List<Pairing>>(emptyList()) }
         var pick by remember { mutableStateOf<String?>(null) }
         var busy by remember { mutableStateOf(false) }
+        val by = remember { sharedBy() }
         LaunchedEffect(Unit) {
             val (s, why) = withContext(Dispatchers.IO) { runCatching { read() }.getOrElse { null to "That can't be read." } }
             shared = s; note = why
-            laptops = withContext(Dispatchers.IO) { SphinxStore.get(applicationContext).pairings() }
+            laptops = withContext(Dispatchers.IO) { SphinxStore.get(applicationContext).pairings().filter { !it.signer } }
             pick = laptops.singleOrNull()?.pid
             if (laptops.isEmpty() && why == null) note = "No laptop paired. Pair one in Sphinx first."
         }
-        Column(Modifier.fillMaxSize().background(c.background).padding(horizontal = 24.dp), verticalArrangement = Arrangement.Center) {
-            Column(Modifier.widthIn(max = 480.dp).fillMaxWidth().align(Alignment.CenterHorizontally)) {
-                Kicker("Sphinx · Send to laptop")
-                shared?.let { Text(it.item.label(), Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleLarge, maxLines = 3) }
-                if (laptops.size > 1) {
-                    Kicker("Which laptop", Modifier.padding(top = 16.dp))
-                    for (p in laptops) Row(Modifier.fillMaxWidth().clickable(role = Role.RadioButton) { pick = p.pid }, verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(pick == p.pid, { pick = p.pid })
-                        Text(p.name, style = MaterialTheme.typography.bodyLarge)
+        val s = shared
+        AskScreen(body = {
+            Eyebrow("Send to laptop")
+            shared?.let { Group { Text(it.item.label(), Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), style = Type.bodyMd.copy(fontWeight = FontWeight.Medium), color = c.text, maxLines = 3) } }
+            Text(by?.let { "Shared by $it" } ?: "Shared by an app that didn't say which", style = Type.bodySm, color = c.text2, textAlign = TextAlign.Center)
+            if (laptops.size > 1) {
+                Column(Modifier.fillMaxWidth()) {
+                SectionLabel("Which laptop")
+                Group {
+                    laptops.forEachIndexed { i, p ->
+                        if (i > 0) Hairline()
+                        Row(Modifier.fillMaxWidth().clickable(role = Role.RadioButton) { pick = p.pid }.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(pick == p.pid, { pick = p.pid }, colors = RadioButtonDefaults.colors(selectedColor = c.primary, unselectedColor = c.text2))
+                            Text(p.name, style = Type.bodyMd.copy(fontWeight = FontWeight.Medium), color = c.text)
+                        }
                     }
                 }
-                note?.let { Text(it, Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant) }
-                val s = shared
-                if (s != null && pick != null) Button({
-                    busy = true
-                    lifecycleScope.launch {
-                        val r = withContext(Dispatchers.IO) { runCatching { Handoff.send(applicationContext, pick!!, s.item, s.data) } }
-                        note = r.exceptionOrNull()?.let { "Not sent: ${it.message ?: it.javaClass.simpleName}" }
-                            ?: "Sent. The laptop shows it within half a minute; nothing opens until you click there."
-                        busy = false
-                        if (r.isSuccess) { delay(1500); finish() }
-                    }
-                }, Modifier.padding(top = 16.dp).fillMaxWidth().height(56.dp), enabled = !busy) {
-                    Text(if (s.item.type == "link") "Open on laptop" else "Send to laptop")
                 }
-                TextButton({ finish() }, Modifier.padding(top = 8.dp)) { Text("Close") }
             }
-        }
+            note?.let { Text(it, Modifier, style = Type.bodySm, color = c.text2, textAlign = TextAlign.Center) }
+        }, actions = {
+            if (s != null && pick != null) {
+                SxButton(if (s.item.type == "link") "Open on laptop" else "Send to laptop", {
+                    // Behind his fingerprint, like the app itself: what leaves the phone is his call, not the sharing app's.
+                    Sphinx.gate(this@ShareActivity, title = "Send to the laptop", subtitle = s.item.label().take(60), onFail = { note = it }, onOk = {
+                        busy = true
+                        lifecycleScope.launch {
+                            val r = withContext(Dispatchers.IO) { runCatching { Handoff.send(applicationContext, pick!!, s.item, s.data) } }
+                            note = r.exceptionOrNull()?.let { "Not sent: ${it.message ?: it.javaClass.simpleName}" }
+                                ?: "Sent. The laptop shows it within half a minute; nothing opens until you click there."
+                            busy = false
+                            if (r.isSuccess) { delay(1500); finish() }
+                        }
+                    })
+                }, Modifier.fillMaxWidth(), enabled = !busy)
+            }
+            SxButton("Close", { finish() }, Modifier.fillMaxWidth(), kind = Kind.SECONDARY)
+        })
     }
 }

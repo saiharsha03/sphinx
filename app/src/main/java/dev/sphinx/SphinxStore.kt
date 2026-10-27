@@ -60,6 +60,11 @@ class SphinxStore(
     private val backup: LocalBackup? = null,
     /** After each change: the relay backup's upload is scheduled (Backups.changed). */
     private val changed: () -> Unit = {},
+    /**
+     * Before anything of an invalidated key is dropped: the backup's retire marker, written durably (LocalBackup.markRetire).
+     * If it can't be written, nothing is dropped (review 2026-10-27: a stop between the two left the old backup live).
+     */
+    private val retiring: () -> Unit = {},
 ) {
     private val random = SecureRandom()
     // Every read-modify-write of either slot holds this, so two callers (the listener and the screen, or two
@@ -199,6 +204,7 @@ class SphinxStore(
         keys.unwrapper()
     } catch (e: Exception) {
         if (!invalidated(e)) throw e
+        retiring()
         synchronized(lock) { saveAccounts(emptyList()) }
         runCatching { dropKey() }
         throw Cleared()
@@ -232,7 +238,8 @@ class SphinxStore(
             instance ?: c.applicationContext.let { app ->
                 val prefs = SealedPrefs(app)
                 val keys = KeystoreBoxKeys(KEY_ALIAS)
-                SphinxStore(prefs::read, prefs::write, keys, dropKey = keys::delete, backup = Backups.local(app), changed = { Backups.changed(app) })
+                SphinxStore(prefs::read, prefs::write, keys, dropKey = keys::delete, backup = Backups.local(app), changed = { Backups.changed(app) },
+                    retiring = { Backups.local(app).markRetire() })
             }.also { instance = it }
         }
     }

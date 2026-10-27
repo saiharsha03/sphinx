@@ -4,7 +4,26 @@ import { readFileSync } from "node:fs";
 import "../detect.js";
 import { allowed, matches, normalize, patterns, savable, setPsl } from "../domains.js";
 
-const { isOtp, isSplit, splitDigits, userHint, shouldAsk, shouldReady } = globalThis.SphinxDetect;
+const { isOtp, isSplit, splitDigits, userHint, shouldAsk, shouldReady, sameOrigin } = globalThis.SphinxDetect;
+
+test("a code is submitted only to a form that posts back to the page's own origin", () => {
+  const o = "https://github.com";
+  assert.equal(sameOrigin("https://github.com/sessions/two-factor", o), true);
+  assert.equal(sameOrigin("/sessions/two-factor", o), true);
+  // An injected form pointed elsewhere, a look-alike, another scheme or port: typed in, never sent.
+  for (const a of ["https://evil.example/c", "https://github.com.evil.example/", "http://github.com/x", "https://github.com:8443/x", "javascript:alert(1)", "data:text/html,x"])
+    assert.equal(sameOrigin(a, o), false, a);
+  // No action: the page itself. A relative one resolves against the document's base (a <base> the page set).
+  assert.equal(sameOrigin("", o, "https://github.com/login"), true);
+  assert.equal(sameOrigin("collect", o, "https://evil.example/"), false);
+  // A clobbered form.action is an element, not the attribute: never taken.
+  assert.equal(sameOrigin({ toString: () => "/x" }, o), false);
+  const src = readFileSync(new URL("../content.js", import.meta.url), "utf8");
+  assert.match(src, /Element\.prototype\.getAttribute\.call\(form, "action"\)/);
+  // Checked again right before the submit, and submitted through the prototype.
+  assert.match(src, /setTimeout\(\(\) => \{ if \(onHome\(\)\) HTMLFormElement\.prototype\.requestSubmit\.call\(form\); \}/);
+  assert.doesNotMatch(src, /form\.action\b/);
+});
 
 test("tells the phone a sign-in started once a password is in: his own input or submit, or an autofill read after load", () => {
   const s = (o) => ({ trusted: true, done: false, filled: false, value: true, field: true, visible: true, ...o });

@@ -43,15 +43,16 @@ The relay's address you then type on the extension's options page is `https://re
 |---|---|---|
 | `SPHINX_HOST` / `SPHINX_PORT` | `127.0.0.1` / `8080` | Where it listens (the Docker image listens on `0.0.0.0`) |
 | `SPHINX_STATE` | `sphinx-relay.json` | The pairings file (`/data/sphinx-relay.json` in Docker) |
-| `SPHINX_REGISTER_TOKEN` | empty | When set, registering a pairing needs it; type it on the extension's options page and it rides in the pairing QR |
+| `SPHINX_REGISTER_TOKEN` | required | Registering a pairing and every backup route need it (a backup route also takes a paired phone's signature); type it on the extension's options page and it rides in the pairing QR. The relay refuses to start without it |
+| `SPHINX_INSECURE_DEV` | unset | `1` lets the relay start without a token, open to anyone: local testing only, never on a reachable host |
 | `SPHINX_MAX_PAIRINGS` | `8` | Pairings the relay keeps |
 | `SPHINX_TRUSTED_PROXIES` | `127.0.0.1` | Proxies whose `X-Forwarded-*` headers are believed |
 | `SPHINX_BACKUP_DIR` | the pairings file's folder | Where the backup slots and the try counts are kept |
 | `SPHINX_FCM_ACCOUNT` | empty | Path to a Firebase service account JSON (the Sphinx project's, never another app's). Empty or missing: no FCM wake (requests wait for the phone's next fetch) |
 
-Set `SPHINX_REGISTER_TOKEN` on any relay reachable from the internet: without it anyone can register pairings until
-the limit is reached. That can't break an existing pairing (a pairing id can't be taken over), but it can fill the
-slots.
+The relay fails closed (review 2026-10-27): without `SPHINX_REGISTER_TOKEN` it refuses to start, unless
+`SPHINX_INSECURE_DEV=1` says on purpose that it is a local test relay. Open, anyone could register pairings until the
+limit and reach the backup routes. `deploy/install.sh` writes a fresh token to `/etc/sphinx/relay.env`.
 
 ## API
 
@@ -99,14 +100,17 @@ paired device, or a stolen pairing key, that uploads without end. Caddy allows r
 |---|---|---|
 | `GET /v1/backup/pass/salt` | a phone | The passcode's public Argon2id salt and cost (counted as a try when there is none) |
 | `POST /v1/backup/{slot}/open` `{auth}` | a phone | The slot's ciphertext, when `auth` matches its verifier |
-| `PUT /v1/backup/{slot}` `{auth, new_auth?, salt?, kdf?, blob}` | the phone | Create (needs `x-sphinx-token` when the relay has one) or update (needs the slot's `auth`) |
+| `PUT /v1/backup/{slot}` `{auth, new_auth?, salt?, kdf?, blob, create?}` | the phone | Create or update (needs the slot's `auth`); `create: false` only updates, a missing slot is 404 |
 | `POST /v1/backup/{slot}/delete` `{auth}` | the phone | Remove a slot |
+
+Every backup route needs `x-sphinx-token` (when the relay has one) or a paired phone's signed headers; without either,
+403 before any try is counted.
 
 `{slot}` is `pass` or a recovery phrase's id (one at a time). Stored on disk in `SPHINX_BACKUP_DIR` (default: the
 pairings file's folder): `backup.json` (per slot a verifier, the salt and cost, the ciphertext), `backup-guard.json`
-(the try counts) and, when locked, `backup.locked`. Every wrong `auth` counts: 3 free per client IP then 30 s doubling,
-10 free in all then 60 s doubling (each at most a day), and after 25 in a row the backup locks until
-`rm /var/lib/sphinx/backup.locked` on the VPS. The client IP behind Caddy's unix socket is Caddy's X-Forwarded-For.
+(the try counts, per slot) and, when a slot is locked, `backup.<slot>.locked`. Every wrong `auth` counts: 3 free per
+client IP then 30 s doubling, 10 free per slot then 60 s doubling (each at most a day), and after 25 in a row that slot
+locks until `rm /var/lib/sphinx/backup.<slot>.locked` on the VPS (an old `backup.locked` locks every slot). The client IP behind Caddy's unix socket is Caddy's X-Forwarded-For.
 Anyone with `backup.json` can guess passcodes offline, limited only by the passcode and Argon2id's cost.
 
 ## Dependencies

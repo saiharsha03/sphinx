@@ -52,7 +52,7 @@ class PrivacyTest {
         assertTrue(s.contains("(pkg in Domains.TEXT_APPS && waiting())"))
         assertTrue(s.contains("if (waiting()) Domains.textCode(pkg, title, text)"))
         // The texted code lives in memory only, keyed by its request, and goes with it.
-        assertTrue(s.contains("private val texted = ConcurrentHashMap<String, String>()"))
+        assertTrue(s.contains("private val texted = TextOffers()"))
         assertFalse(File(src, "SphinxStore.kt").readText().contains("texted"))
     }
 

@@ -1,37 +1,42 @@
 package dev.sphinx
 
+import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -39,21 +44,16 @@ import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
 
-@Composable
-private fun Note(text: String?, error: Boolean = false) {
-    text?.let { Text(it, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
-}
-
 /**
  * The Keys safe: recovery phrases, backup codes and small key files. Adding needs no fingerprint (the public key seals);
  * showing or saving one needs a fresh fingerprint each time. Files come in and go out only through the system's file
- * picker (no storage permission). The screen is already FLAG_SECURE (MainActivity).
+ * picker (no storage permission). The screen is already FLAG_SECURE (MainActivity). [samples]: screenshot tests only.
  */
 @Composable
-fun KeysPane() {
+fun KeysPane(samples: Samples? = null) {
     val ctx = LocalContext.current
     val app = ctx.applicationContext
-    val c = MaterialTheme.colorScheme
+    val c = Sx.p
     val scope = rememberCoroutineScope()
     var entries by remember { mutableStateOf<List<SafeEntry>>(emptyList()) }
     var bump by remember { mutableIntStateOf(0) }
@@ -64,7 +64,7 @@ fun KeysPane() {
     // One entry open on screen (id, its text), hidden after a minute; one waiting to be saved where he picks.
     var shown by remember { mutableStateOf<Pair<String, String>?>(null) }
     var export by remember { mutableStateOf<Pair<SafeEntry, ByteArray>?>(null) }
-    LaunchedEffect(bump) { entries = withContext(Dispatchers.IO) { SafeStore.get(app).entries() } }
+    LaunchedEffect(bump) { entries = samples?.keys ?: withContext(Dispatchers.IO) { SafeStore.get(app).entries() } }
     LaunchedEffect(shown) { if (shown != null) { delay(60_000); shown = null } }
 
     val pickIn = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -99,134 +99,233 @@ fun KeysPane() {
         }, onFail = { note = it })
     }
 
-    Column(Modifier.widthIn(max = 640.dp)) {
-        Text("Keys safe", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleLarge)
-        Text("Recovery phrases, backup codes and small key files. Each one opens with your fingerprint, and leaves the phone only inside your encrypted backup.",
-            style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
-        if (entries.isEmpty()) Note("Nothing here yet.")
-        for (e in entries) Column(Modifier.fillMaxWidth()) {
-            HorizontalDivider(color = c.outlineVariant, modifier = Modifier.padding(top = 8.dp))
-            Row(Modifier.padding(top = 8.dp)) {
-                Column(Modifier.weight(1f)) {
-                    Text(e.title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-                    Text((if (e.kind == "file") "File ${e.name}, " else "Text, ") + "${maxOf(1, e.size / 1024)} KB · " +
-                        DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(e.added)), style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
-                }
-            }
-            if (shown?.first == e.id) Text(shown!!.second, Modifier.padding(vertical = 8.dp), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium)
-            var confirm by remember(e.id) { mutableStateOf(false) }
-            Row {
-                if (e.kind == "text") TextButton({ if (shown?.first == e.id) shown = null else withFingerprint(e, "Show") { b -> shown = e.id to String(b); b.fill(0) } }) {
-                    Text(if (shown?.first == e.id) "Hide" else "Show")
-                }
-                TextButton({ withFingerprint(e, "Save") { b -> export = e to b; pickOut.launch(if (e.kind == "file") e.name else "${e.title}.txt") } }) { Text("Save to…") }
-                TextButton({
+    @Composable
+    fun EntryRow(e: SafeEntry, first: Boolean) {
+        var open by remember(e.id) { mutableStateOf(false) }
+        var confirm by remember(e.id) { mutableStateOf(false) }
+        LaunchedEffect(confirm) { if (confirm) { delay(4000); confirm = false } }
+        if (!first) Hairline()
+        Column(Modifier.fillMaxWidth().riseIn()) {
+            ListRow(e.title, (if (e.kind == "file") "File · ${e.name} · " else "Text · ") + "${maxOf(1, e.size / 1024)} KB · " +
+                DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(e.added)), onClick = { open = !open }) { Pill("sealed") }
+            if (shown?.first == e.id) Text(shown!!.second, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp).fillMaxWidth().clip(Corner.control)
+                .background(c.surface3).border(1.dp, c.border, Corner.control).padding(12.dp), style = Type.codeSm, color = c.text)
+            if (open || shown?.first == e.id) Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (e.kind == "text") SxButton(if (shown?.first == e.id) "Hide" else "Show",
+                    { if (shown?.first == e.id) shown = null else withFingerprint(e, "Show") { b -> shown = e.id to String(b); b.fill(0) } }, kind = Kind.SECONDARY, small = true)
+                SxButton("Save to…", { withFingerprint(e, "Save") { b -> export = e to b; AppLock.goingInside(); pickOut.launch(if (e.kind == "file") e.name else "${e.title}.txt") } },
+                    kind = Kind.SECONDARY, small = true)
+                Spacer(Modifier.weight(1f))
+                SxButton(if (confirm) "Tap again to delete" else "Delete", {
                     if (confirm) scope.launch { withContext(Dispatchers.IO) { SafeStore.get(app).delete(e.id) }; confirm = false; bump++ } else confirm = true
-                }) { Text(if (confirm) "Tap again to delete" else "Delete") }
+                }, kind = Kind.DANGER, small = true)
             }
         }
-        HorizontalDivider(color = c.outlineVariant, modifier = Modifier.padding(top = 8.dp))
-        if (adding) {
-            OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Name") }, singleLine = true)
-            OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Text (a phrase, backup codes)") }, minLines = 3,
-                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password))
-            Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button({
-                    val data = text.toByteArray()
-                    scope.launch {
-                        val r = withContext(Dispatchers.IO) { runCatching { SafeStore.get(app).add(title, "text", "", "text/plain", data) } }
-                        note = r.exceptionOrNull()?.message ?: "Added."
-                        if (r.isSuccess) { text = ""; title = ""; adding = false }
-                        bump++
-                    }
-                }, enabled = text.isNotBlank()) { Text("Save text") }
-                TextButton({ pickIn.launch(arrayOf("*/*")) }) { Text("Pick a file…") }
-                TextButton({ adding = false; text = ""; title = "" }) { Text("Cancel") }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        Text("Recovery phrases, backup codes and small key files. Each one opens with your fingerprint, and leaves the phone only inside your encrypted backup.",
+            Modifier.padding(horizontal = 4.dp), style = Type.bodySm, color = c.text2)
+        if (entries.isEmpty()) Group { ListRow("Nothing here yet.") }
+        val texts = entries.filter { it.kind != "file" }
+        val files = entries.filter { it.kind == "file" }
+        if (texts.isNotEmpty()) Column {
+            SectionLabel("Recovery")
+            Group { texts.forEachIndexed { i, e -> EntryRow(e, i == 0) } }
+        }
+        if (files.isNotEmpty()) Column {
+            SectionLabel("Files")
+            Group { files.forEachIndexed { i, e -> EntryRow(e, i == 0) } }
+        }
+        if (adding) Group {
+            Column(Modifier.padding(16.dp)) {
+                OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("Name") }, singleLine = true, colors = fieldColors())
+                OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Text (a phrase, backup codes)") }, minLines = 3,
+                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password), colors = fieldColors())
+                Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SxButton("Save text", {
+                        val data = text.toByteArray()
+                        scope.launch {
+                            val r = withContext(Dispatchers.IO) { runCatching { SafeStore.get(app).add(title, "text", "", "text/plain", data) } }
+                            note = r.exceptionOrNull()?.message ?: "Added."
+                            if (r.isSuccess) { text = ""; title = ""; adding = false }
+                            bump++
+                        }
+                    }, enabled = text.isNotBlank(), small = true)
+                    SxButton("Cancel", { adding = false; text = ""; title = "" }, kind = Kind.SECONDARY, small = true)
+                }
             }
-        } else Button({ adding = true }, Modifier.padding(top = 12.dp)) { Text("Add to the safe") }
+        } else Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            SxButton("Add text", { adding = true }, Modifier.weight(1f), kind = Kind.SECONDARY)
+            // A file takes its own name.
+            SxButton("Pick a file", { AppLock.goingInside(); pickIn.launch(arrayOf("*/*")) }, Modifier.weight(1f), kind = Kind.SECONDARY)
+        }
         Note(note)
     }
 }
 
 /**
- * Backup, in Settings: Google's (always on, nothing to set), the relay copy with its passcode, and the 24-word phrase
- * (off by default; shown once).
+ * Backup's state, shared by its section and the danger zone (Turn off, Turn the phrase off): Google's (always on,
+ * nothing to set), the relay copy with its passcode, and the 24-word phrase (off by default; shown once).
  */
-@Composable
-fun BackupPane() {
-    val ctx = LocalContext.current
-    val app = ctx.applicationContext
-    val c = MaterialTheme.colorScheme
-    val scope = rememberCoroutineScope()
-    var state by remember { mutableStateOf<BackupState?>(null) }
-    var counts by remember { mutableStateOf(0 to 0) }
-    var bump by remember { mutableIntStateOf(0) }
-    var note by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf(false) }
-    var relay by remember { mutableStateOf(ctx.getString(R.string.sphinx_relay)) }
-    var token by remember { mutableStateOf("") }
-    var pass by remember { mutableStateOf("") }
-    var again by remember { mutableStateOf("") }
-    var words by remember { mutableStateOf<List<String>?>(null) }
-    LaunchedEffect(bump) {
-        val (s, n) = withContext(Dispatchers.IO) { Backups.local(app).read() to SphinxStore.get(app).accounts().size }
+@Stable
+class BackupModel(private val app: Context, private val scope: CoroutineScope, relayDefault: String, private val builtInToken: String = "") {
+    var state by mutableStateOf<BackupState?>(null)
+    var counts by mutableStateOf(0 to 0)
+    var bump by mutableIntStateOf(0)
+    var note by mutableStateOf<String?>(null)
+    var busy by mutableStateOf(false)
+    var editing by mutableStateOf(false)
+    var relay by mutableStateOf(relayDefault)
+    var token by mutableStateOf("")
+    var pass by mutableStateOf("")
+    var again by mutableStateOf("")
+    /** The passcode in use now: changing it, or the relay, needs it (Backups.setUp). */
+    var current by mutableStateOf("")
+    var words by mutableStateOf<List<String>?>(null)
+
+    fun loaded(s: BackupState?, n: Int) {
         state = s; counts = (s?.accounts?.size ?: 0) to n
-        s?.relay?.let { relay = it.relay; token = it.token }
+        // The built-in token is never shown or carried in the field (an older state may still hold it).
+        s?.relay?.let { relay = it.relay; token = it.token.takeIf { t -> t != builtInToken }.orEmpty() }
     }
+
     fun run(done: String, work: () -> Unit) {
         busy = true; note = "Working… (the passcode's key takes a few seconds)"
         scope.launch {
             val r = withContext(Dispatchers.IO) { runCatching(work) }
             note = r.exceptionOrNull()?.let { Backups.why(it) } ?: done
             busy = false; bump++
-            if (r.isSuccess) { pass = ""; again = ""; editing = false }
+            if (r.isSuccess) { pass = ""; again = ""; current = ""; editing = false }
         }
     }
-    val r = state?.relay
-    Column(Modifier.widthIn(max = 640.dp).padding(top = 24.dp)) {
-        Kicker("Backup")
-        Fact("Google", "On. Android backs up Sphinx's sealed backup with your Google account, end-to-end encrypted with this phone's screen lock. As strong as your Google account plus that screen lock.")
-        Fact("In it", "${counts.first} of ${counts.second} account(s), the Keys safe, your sites. Never the laptop pairings: they pair again.")
-        Fact("The relay", if (r == null) "Off" else "On, ${r.relay.removePrefix("https://")}, after every change")
-        Fact("Phrase", if (r?.phraseId?.isNotEmpty() == true) "On (24 words)" else "Off")
-        if (editing) {
-            OutlinedTextField(relay, { relay = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Relay") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
-            OutlinedTextField(token, { token = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Relay token (the first time)") }, singleLine = true)
-            OutlinedTextField(pass, { pass = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Backup passcode (12+ characters)") }, singleLine = true,
-                visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
-            Text(Passcode.hint(pass), Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
-            OutlinedTextField(again, { again = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("The same passcode again") }, singleLine = true,
-                visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
+
+    fun turnOff() = run("The relay backup is off and its copy deleted.") { Backups.turnOff(app) }
+    fun phraseOff() = run("The recovery phrase is off; its copy on the relay is deleted.") { Backups.phraseOff(app) }
+}
+
+@Composable
+fun rememberBackupModel(samples: Samples?): BackupModel {
+    val ctx = LocalContext.current
+    val app = ctx.applicationContext
+    val scope = rememberCoroutineScope()
+    val m = remember { BackupModel(app, scope, ctx.getString(R.string.sphinx_relay), ctx.getString(R.string.sphinx_relay_token)) }
+    LaunchedEffect(m.bump) {
+        if (samples != null) m.loaded(samples.backup, samples.accounts)
+        else { val (s, n) = withContext(Dispatchers.IO) { Backups.local(app).read() to SphinxStore.get(app).accounts().size }; m.loaded(s, n) }
+    }
+    return m
+}
+
+/** A passcode field's mask: dots, or the text itself while he has tapped Show (the screens are FLAG_SECURE). */
+fun masked(see: Boolean) = if (see) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation()
+
+/** Show / Hide at the end of a passcode field. */
+@Composable
+fun SeeToggle(see: Boolean, onToggle: () -> Unit) {
+    Text(if (see) "Hide" else "Show", Modifier.clip(Corner.control).clickable(role = Role.Button, onClick = onToggle).padding(horizontal = 12.dp, vertical = 8.dp),
+        style = Type.bodySm.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), color = Sx.p.primary)
+}
+
+/** Settings, Backup: the three paths and their actions (turning things off lives in the danger zone). */
+@Composable
+fun BackupPane(m: BackupModel) {
+    val ctx = LocalContext.current
+    val app = ctx.applicationContext
+    val c = Sx.p
+    val r = m.state?.relay
+    var see by remember { mutableStateOf(false) }
+    Group {
+        ListRow("Google backup", "Android backs up Sphinx's sealed backup with your Google account, end-to-end encrypted with this phone's screen lock. As strong as your Google account plus that screen lock.") {
+            Value("On", ok = true)
+        }
+        ListRow("Relay backup", if (r == null) "Opens with your passcode" else "${r.relay.removePrefix("https://")}, after every change. Opens with your passcode", rule = true) {
+            Value(if (r == null) "Off" else "On", ok = r != null)
+        }
+        ListRow("Recovery phrase", "24 words, shown once", rule = true) { Value(if (r?.phraseId?.isNotEmpty() == true) "On" else "Off", ok = r?.phraseId?.isNotEmpty() == true) }
+        ListRow("In it", "${m.counts.first} of ${m.counts.second} account(s), the Keys safe, your sites. Never the laptop pairings: they pair again.", rule = true)
+        // The phrase needs the relay backup, so with the relay backup off both are off.
+        if (r == null) { Hairline(); GroupText("Without the relay backup or the recovery phrase, adding a new fingerprint to this phone clears your codes for good.", color = c.danger) }
+        Hairline()
+        if (m.editing) Column(Modifier.padding(16.dp)) {
+            if (r != null) OutlinedTextField(m.current, { m.current = it }, Modifier.fillMaxWidth().padding(bottom = 8.dp), label = { Text("Current backup passcode") }, singleLine = true,
+                visualTransformation = masked(see), trailingIcon = { SeeToggle(see) { see = !see } }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false), colors = fieldColors())
+            // Another relay origin: the token typed for the old one doesn't go along.
+            OutlinedTextField(m.relay, { if (!RelayClient.sameOrigin(it, m.relay)) m.token = ""; m.relay = it }, Modifier.fillMaxWidth(), label = { Text("Relay") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), colors = fieldColors())
+            OutlinedTextField(m.token, { m.token = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Relay token (the first time)") }, singleLine = true, colors = fieldColors())
+            OutlinedTextField(m.pass, { m.pass = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Backup passcode (12+ characters)") }, singleLine = true,
+                visualTransformation = masked(see), trailingIcon = { SeeToggle(see) { see = !see } }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false), colors = fieldColors())
+            Text(Passcode.hint(m.pass), Modifier.padding(top = 4.dp), style = Type.bodySm, color = c.text2)
+            OutlinedTextField(m.again, { m.again = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("The same passcode again") }, singleLine = true,
+                visualTransformation = masked(see), trailingIcon = { SeeToggle(see) { see = !see } }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false), colors = fieldColors())
             Text("A new phone restores with this passcode alone. Anyone who gets the relay's copy can try passcodes offline, so make it a long phrase you won't forget.",
-                Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
-            Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button({ val p = pass; run(if (r == null) "The relay backup is on." else "Passcode changed.") { Backups.setUp(app, relay.trim().trimEnd('/'), token.trim(), p) } },
-                    enabled = !busy && pass == again && Passcode.problem(pass) == null && relay.startsWith("https://")) { Text(if (r == null) "Turn on" else "Change passcode") }
-                TextButton({ editing = false; pass = ""; again = "" }) { Text("Cancel") }
+                Modifier.padding(top = 6.dp), style = Type.bodySm, color = c.text2)
+            Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SxButton(if (r == null) "Turn on" else "Change passcode", {
+                    val p = m.pass; val relay = m.relay.trim().trimEnd('/'); val token = m.token; val now = m.current.takeIf { r != null }
+                    val moved = r != null && relay != r.relay
+                    // Every secret goes to that relay: a fresh fingerprint on the codes key first.
+                    Sphinx.confirm(ctx, if (r == null) "Turn on the relay backup" else "Change the relay backup", "It sends every code's secret, sealed, to $relay", onOk = {
+                        m.run(if (r == null) "The relay backup is on." else if (moved) "Your backup now goes to ${relay.removePrefix("https://")}." else "Passcode changed.") {
+                            Backups.setUp(app, relay, token.trim(), p, now)
+                        }
+                    }, onFail = { m.note = it })
+                }, enabled = !m.busy && m.pass == m.again && Passcode.problem(m.pass) == null && m.relay.startsWith("https://") && (r == null || m.current.isNotBlank()), small = true)
+                SxButton("Cancel", { m.editing = false; m.pass = ""; m.again = ""; m.current = "" }, kind = Kind.SECONDARY, small = true)
             }
-        } else Row {
-            TextButton({ editing = true }, enabled = !busy) { Text(if (r == null) "Back up to the relay…" else "Change passcode…") }
-            if (r != null) TextButton({ run("The relay backup is off and its copy deleted.") { Backups.turnOff(app) } }, enabled = !busy) { Text("Turn off") }
-        }
+        } else ListRow(if (r == null) "Back up to the relay…" else "Change passcode…", titleColor = c.primary, onClick = if (m.busy) null else ({ m.editing = true })) { Chevron() }
         // The recovery phrase: shown once, never stored, never shown again.
-        val w = words
+        val w = m.words
         if (w != null) {
-            Kicker("Your recovery phrase", Modifier.padding(top = 16.dp))
-            Text(w.chunked(4).mapIndexed { i, row -> row.mapIndexed { j, x -> "${i * 4 + j + 1}. $x" }.joinToString("   ") }.joinToString("\n"),
-                Modifier.padding(top = 8.dp), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium)
-            Text("Write these 24 words on paper and keep it safe. They open your relay backup without the passcode, even if this phone and your Google account are gone. Sphinx won't show them again.",
-                Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
-            Row {
-                Button({ val ws = w; words = null; run("The recovery phrase is on.") { Backups.phraseOn(app, ws) } }, enabled = !busy) { Text("I wrote them down") }
-                TextButton({ words = null }) { Text("Cancel") }
+            Hairline()
+            Column(Modifier.padding(16.dp)) {
+                Kicker("Your recovery phrase")
+                Text(w.chunked(4).mapIndexed { i, row -> row.mapIndexed { j, x -> "${i * 4 + j + 1}. $x" }.joinToString("   ") }.joinToString("\n"),
+                    Modifier.padding(top = 8.dp).fillMaxWidth().clip(Corner.control).background(c.surface3).border(1.dp, c.border, Corner.control).padding(12.dp),
+                    style = Type.codeSm, color = c.text)
+                Text("Write these 24 words on paper and keep it safe. They open your relay backup without the passcode, even if this phone and your Google account are gone. Sphinx won't show them again.",
+                    Modifier.padding(top = 8.dp), style = Type.bodySm, color = c.text2)
+                Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SxButton("I wrote them down", {
+                        val ws = w
+                        Sphinx.confirm(ctx, "Turn on the recovery phrase", "These words will open your relay backup", onOk = {
+                            m.words = null; m.run("The recovery phrase is on.") { Backups.phraseOn(app, ws) }
+                        }, onFail = { m.note = it })
+                    }, enabled = !m.busy, small = true)
+                    SxButton("Cancel", { m.words = null }, kind = Kind.SECONDARY, small = true)
+                }
             }
-        } else if (r != null) Row {
-            if (r.phraseId.isEmpty()) TextButton({ words = Bip39.phrase() }, enabled = !busy) { Text("Turn on a recovery phrase…") }
-            else TextButton({ run("The recovery phrase is off; its copy on the relay is deleted.") { Backups.phraseOff(app) } }, enabled = !busy) { Text("Turn the phrase off") }
+        } else if (r != null && r.phraseId.isEmpty())
+            ListRow("Turn on a recovery phrase…", titleColor = c.primary, rule = true, onClick = if (m.busy) null else ({ m.words = Bip39.phrase() })) { Chevron() }
+    }
+    Note(m.note)
+}
+
+/** The destructive actions Settings already had, together and in red: the relay backup, the phrase, the signing unlock. */
+@Composable
+fun DangerZone(backup: BackupModel, signing: SigningModel) {
+    val r = backup.state?.relay
+    val phrase = r?.phraseId?.isNotEmpty() == true
+    val unlock = signing.current != null
+    if (r == null && !unlock) return
+    var confirm by remember { mutableStateOf(false) }
+    LaunchedEffect(confirm) { if (confirm) { delay(4000); confirm = false } }
+    val c = Sx.p
+    Column {
+        SectionLabel("Danger zone", danger = true)
+        Group(border = c.danger.copy(alpha = 0.45f)) {
+            var first = true
+            if (r != null) {
+                ListRow("Turn off the relay backup", "Deletes its copy on the relay.", titleColor = c.dangerText, onClick = if (backup.busy) null else backup::turnOff)
+                first = false
+            }
+            if (phrase) {
+                ListRow("Turn the phrase off", "Deletes its copy on the relay.", titleColor = c.dangerText, rule = true, onClick = if (backup.busy) null else backup::phraseOff)
+            }
+            if (unlock) ListRow(if (confirm) "Tap again to remove" else "Remove the signing unlock", "Signing then needs the passkey.", titleColor = c.dangerText, rule = !first,
+                onClick = { if (confirm) { signing.remove(); confirm = false } else confirm = true })
         }
-        Note(note)
     }
 }
 
@@ -235,36 +334,56 @@ fun BackupPane() {
 fun RestorePane(onDone: (String) -> Unit) {
     val ctx = LocalContext.current
     val app = ctx.applicationContext
+    val c = Sx.p
     val scope = rememberCoroutineScope()
     var open by remember { mutableStateOf(false) }
     var relay by remember { mutableStateOf(ctx.getString(R.string.sphinx_relay)) }
     var byPhrase by remember { mutableStateOf(false) }
     var secret by remember { mutableStateOf("") }
+    var token by remember { mutableStateOf("") }
     var note by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    if (!open) { TextButton({ open = true }, Modifier.padding(top = 8.dp)) { Text("Restore from a backup…") }; return }
-    Column(Modifier.widthIn(max = 560.dp).padding(top = 16.dp)) {
-        Kicker("Restore")
-        Text("Your Google backup comes back by itself when Android restores this phone. Otherwise, from your relay:", style = MaterialTheme.typography.bodySmall)
-        OutlinedTextField(relay, { relay = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Relay") }, singleLine = true)
-        Row {
-            TextButton({ byPhrase = false; secret = "" }) { Text("Passcode", fontWeight = if (!byPhrase) FontWeight.Bold else FontWeight.Normal) }
-            TextButton({ byPhrase = true; secret = "" }) { Text("Recovery phrase", fontWeight = if (byPhrase) FontWeight.Bold else FontWeight.Normal) }
-        }
-        OutlinedTextField(secret, { secret = it }, Modifier.fillMaxWidth(), label = { Text(if (byPhrase) "The 24 words" else "Backup passcode") },
-            minLines = if (byPhrase) 3 else 1, singleLine = !byPhrase,
-            visualTransformation = if (byPhrase) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
-        Button({
-            val words = if (byPhrase) Bip39.check(secret) ?: run { note = "That isn't a valid 24-word phrase (check the words and their order)."; return@Button } else null
-            busy = true; note = "Restoring… (a few seconds)"
-            val s = secret
-            scope.launch {
-                val r = withContext(Dispatchers.IO) { runCatching { Backups.restore(app, relay.trim().trimEnd('/'), passcode = s.takeIf { !byPhrase }, words = words) } }
-                busy = false
-                r.onSuccess { n -> secret = ""; onDone("Restored $n account(s) and the Keys safe. Pair your laptops again.") }.onFailure { note = Backups.why(it) }
+    var see by remember { mutableStateOf(false) }
+    if (!open) { SxButton("Restore from a backup…", { open = true }, Modifier.fillMaxWidth(), kind = Kind.SECONDARY); return }
+    Column {
+        SectionLabel("Restore", Modifier.padding(top = 8.dp))
+        Group {
+            Column(Modifier.padding(16.dp)) {
+                Text("Your Google backup comes back by itself when Android restores this phone. Otherwise, from your relay:", style = Type.bodySm, color = c.text2)
+                OutlinedTextField(relay, { if (!RelayClient.sameOrigin(it, relay)) token = ""; relay = it }, Modifier.fillMaxWidth().padding(top = 12.dp), label = { Text("Relay") }, singleLine = true, colors = fieldColors())
+                // Sphinx's own relay takes the token built in; another relay that asks for one needs it typed.
+                if (!RelayClient.sameOrigin(relay, ctx.getString(R.string.sphinx_relay)))
+                    OutlinedTextField(token, { token = it }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Relay token (if it asks for one)") }, singleLine = true, colors = fieldColors())
+                // A segmented control: passcode or the 24 words.
+                Row(Modifier.padding(top = 12.dp).fillMaxWidth().clip(Corner.control).background(c.surface1).border(1.dp, c.border, Corner.control).padding(4.dp)) {
+                    for ((label, phrase) in listOf("Passcode" to false, "Recovery phrase" to true)) {
+                        val on = byPhrase == phrase
+                        androidx.compose.foundation.layout.Box(Modifier.weight(1f).clip(Corner.control)
+                            .then(if (on) Modifier.background(c.surface3).border(1.dp, c.rim, Corner.control) else Modifier)
+                            .clickable(role = Role.Tab) { byPhrase = phrase; secret = "" }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                            Text(label, style = Type.bodySm.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), color = if (on) c.text else c.text2)
+                        }
+                    }
+                }
+                OutlinedTextField(secret, { secret = it }, Modifier.fillMaxWidth().padding(top = 12.dp), label = { Text(if (byPhrase) "The 24 words" else "Backup passcode") },
+                    minLines = if (byPhrase) 3 else 1, singleLine = !byPhrase,
+                    visualTransformation = masked(byPhrase || see), trailingIcon = if (byPhrase) null else ({ SeeToggle(see) { see = !see } }),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false), colors = fieldColors())
+                SxButton("Restore", restore@{
+                    val words = if (byPhrase) Bip39.check(secret) ?: run { note = "That isn't a valid 24-word phrase (check the words and their order)."; return@restore } else null
+                    val s = secret
+                    // A restore joins what this phone holds to the backup it brings: his fingerprint on the codes key first.
+                    Sphinx.confirm(ctx, "Restore from the relay", "What this phone holds joins that backup", onFail = { note = it }, onOk = {
+                    busy = true; note = "Restoring… (a few seconds)"
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) { runCatching { Backups.restore(app, relay.trim().trimEnd('/'), passcode = s.takeIf { !byPhrase }, words = words, typed = token.trim()) } }
+                        busy = false
+                        r.onSuccess { n -> secret = ""; onDone("Restored $n account(s) and the Keys safe. Pair your laptops again.") }.onFailure { note = Backups.why(it) }
+                    }
+                    })
+                }, Modifier.padding(top = 12.dp).fillMaxWidth(), enabled = !busy && secret.isNotBlank())
+                Note(note)
             }
-        }, Modifier.padding(top = 8.dp), enabled = !busy && secret.isNotBlank()) { Text("Restore") }
-        Note(note)
+        }
     }
 }

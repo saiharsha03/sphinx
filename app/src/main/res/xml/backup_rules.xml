@@ -4,4 +4,5 @@
 <full-backup-content>
     <include domain="file" path="backup/state.bin" requireFlags="clientSideEncryption" />
     <include domain="file" path="backup/key.bin" requireFlags="clientSideEncryption" />
+    <include domain="file" path="backup/key.next" requireFlags="clientSideEncryption" />
 </full-backup-content>

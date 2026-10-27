@@ -2,14 +2,18 @@
 <!-- The Google backup (docs/DESIGN.md, "Backup"): only the sealed backup state and its key travel, and only end-to-end
      encrypted with the phone's screen lock (disableIfNoEncryptionCapabilities). Everything else stays: the prefs are
      sealed with this phone's Keystore keys and couldn't open anywhere else, the pairings always pair again, and the
-     Keys safe's own files are sealed to this phone's codes key (the backup state carries their contents). -->
+     Keys safe's own files are sealed to this phone's codes key (the backup state carries their contents).
+     A device-to-device transfer ("Copy apps & data") needs only the screen lock, so it never carries key.bin: the state
+     alone opens nothing (review 2026-10-27: a screen-lock PIN would otherwise beat the fingerprint). The new phone
+     restores from Google or the relay instead. -->
 <data-extraction-rules>
     <cloud-backup disableIfNoEncryptionCapabilities="true">
         <include domain="file" path="backup/state.bin" />
         <include domain="file" path="backup/key.bin" />
+        <!-- A key rotation stopped between its steps leaves the new key here; without it the state wouldn't open. -->
+        <include domain="file" path="backup/key.next" />
     </cloud-backup>
     <device-transfer>
         <include domain="file" path="backup/state.bin" />
-        <include domain="file" path="backup/key.bin" />
     </device-transfer>
 </data-extraction-rules>

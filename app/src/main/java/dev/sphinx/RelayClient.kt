@@ -16,6 +16,41 @@ object RelayClient {
 
     class Failed(val status: Int) : Exception("relay $status")
 
+    /**
+     * The registration value to send to [relay]: the one the QR or the screen gave ([given]), else the one built into
+     * this app ([builtIn]) and only when [relay] is the built-in relay's own origin ([builtInRelay]). A QR naming another
+     * relay never gets the owner's token (review 2026-10-27).
+     */
+    fun tokenFor(relay: String, given: String, builtInRelay: String, builtIn: String): String {
+        val home = sameOrigin(relay, builtInRelay)
+        // The built-in value passed back in (a stored or pre-filled field) is still the built-in one: home only.
+        if (given.isNotBlank() && (given != builtIn || home)) return given
+        return if (home) builtIn else ""
+    }
+
+    /**
+     * The token to keep with a backup set up for [relay]: what he typed, never the built-in value, and never the old
+     * relay's own token carried to another origin (review 2026-10-27: a token is bound to the relay it was given for).
+     */
+    fun keepToken(typed: String, relay: String, builtIn: String, oldRelay: String?, oldToken: String?): String {
+        val t = typed.trim()
+        if (t.isEmpty() || t == builtIn) return ""
+        if (oldRelay != null && t == oldToken && !sameOrigin(relay, oldRelay)) return ""
+        return t
+    }
+
+    /** Scheme, host and port equal (https's 443 written or not). */
+    fun sameOrigin(a: String, b: String): Boolean {
+        fun origin(s: String) = runCatching {
+            val u = java.net.URI(s.trim())
+            val scheme = u.scheme?.lowercase() ?: return null
+            val host = u.host?.lowercase() ?: return null
+            Triple(scheme, host, if (u.port == -1) (if (scheme == "https") 443 else if (scheme == "http") 80 else -1) else u.port)
+        }.getOrNull()
+        val x = origin(a)
+        return x != null && x == origin(b)
+    }
+
     private fun call(base: String, method: String, path: String, body: ByteArray?, headers: Map<String, String>, readMs: Int = 15_000): String? {
         val c = URL(base + path).openConnection() as HttpURLConnection
         try {

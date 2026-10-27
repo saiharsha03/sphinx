@@ -131,10 +131,22 @@ Three ways back, in this order:
 1. **Google (primary).** Android's own backup carries exactly `backup/state.bin` and `backup/key.bin`, and nothing else
    of the app (`res/xml/data_extraction_rules.xml`: two includes; `disableIfNoEncryptionCapabilities`, and
    `requireFlags="clientSideEncryption"` in `backup_rules.xml` for older Androids), so it only goes up end-to-end
-   encrypted with the phone's screen lock. Device-to-device transfer takes the same two files. On the new phone's first
-   start (`Backups.start`), files that this phone didn't make (no `backup.home` in its sealed prefs, which never travel)
-   are opened, every account and safe entry is sealed again with the new phone's Keystore keys, the travelled BK is
-   retired for a new one (`LocalBackup.rotate`), and he is told to pair his laptops again. **This path is as strong as
+   encrypted with the phone's screen lock. A device-to-device transfer, which needs only the screen lock, carries
+   `state.bin` without `key.bin`, so it opens nothing. On the new phone's first start (`Backups.start`), files that this
+   phone didn't make (no `backup.home` in its sealed prefs, which never travel) are set aside unopened
+   (`LocalBackup.stash`) and the phone starts its own backup; Codes offers "A Google backup came with this phone", and
+   only when he opens it (a fingerprint on the codes key) is every account and safe entry sealed again with the new
+   phone's Keystore keys and joined to its own backup (`Backups.adopt`), and he is told to pair his laptops again.
+   A new fingerprint enrolment (which clears the codes) sets this phone's own backup aside the same way
+   (`Backups.retire`), but that one reopens only with its backup passcode or recovery phrase (`Backups.adoptWith`),
+   never a fingerprint: the codes key comes back under the new finger. **Without the relay backup or the recovery
+   phrase that copy can never be reopened: adding a new fingerprint then clears the codes for good** (Settings, Backup
+   says so while both are off). The retire is durable and fails closed: a `retire.pending` marker is written and synced before the invalidated key is
+   dropped, every start finishes a pending retire before anything else, and while one can't be finished nothing that
+   sends or merges the backup runs (setup, phrase, restore, upload, opening a set-aside copy). Every salt a sign was
+   approved for keeps its owning key name for good. Each set-aside copy has its own folder (`restored`, `restored-2`, ...), so a second
+   one never overwrites an unopened first one; deleting one ("Don't open it") takes a second tap. A relay restore asks for a codes-key
+   fingerprint first, since it joins what the phone holds to the backup it brings. **This path is as strong as
    his Google account plus the old phone's screen lock**: whoever has both can restore his codes.
 2. **The relay, with the backup passcode (secondary).** Settings, Backup, "Back up to the relay": a passcode of at least
    12 characters (the hint pushes for a phrase of four or more words). Argon2id (Bouncy Castle 1.80; 64 MiB, 3 passes,
@@ -146,7 +158,8 @@ Three ways back, in this order:
    relay checks it and returns the record, and the phone opens it. No email, no account, no code. The relay guards
    tries (`Backup` in `relay/sphinx_relay.py`): 3 free per client IP, then 30 s doubling per failure; 10 free over all
    IPs, then a minute doubling (both up to a day); after 25 failures in a row it locks until someone with the VPS removes
-   `backup.locked`. Counts survive a restart. **Anyone who has the relay's copy (the VPS's disk, a backup of it) can
+   its `backup.<slot>.locked` (counts and locks are per slot). Counts survive a restart. Every backup route needs the
+   relay's registration token or a paired phone's signature first. **Anyone who has the relay's copy (the VPS's disk, a backup of it) can
    guess passcodes offline, limited only by the passcode's strength and Argon2id's cost**: a long phrase is the defence.
 3. **The 24-word recovery phrase (tertiary, off by default).** Settings, Backup, "Turn on a recovery phrase" (the relay
    backup must be on): BIP39 (256 bits of entropy, English list, checksum), shown once and never stored. Its seed
@@ -163,8 +176,8 @@ phrase, BK, or a secret. Not built (owner, 2026-10-26): email codes, a non-Googl
   paired), the phone hands its FCM token to each pairing's relay (`POST /v1/push`; `Push.register` at pairing, on a new
   token and every 15 minutes in `SphinxBeat`), and the relay's answer `{push}` is kept on the pairing. A relay with a
   service account (`SPHINX_FCM_ACCOUNT`) then sends each queued request at once as a high-priority FCM data message,
-  `{"t": "sync", "sphinx": "[{pid, rid, blob}, ...]"}`: the pairing's queued blobs, newest first, as many as fit in
-  3,500 bytes (`carry`, under FCM's 4 KB), else a plain `{"t": "sync"}`. `SphinxMessaging` drops any other shape
+  `{"t": "sync", "sphinx": "[{pid, rid, blob}, ...]"}`: the pairing's queued blobs, all of them oldest first when they
+  fit in 3,500 bytes (`carry`, under FCM's 4 KB; their counters must arrive in order), else a plain `{"t": "sync"}`. `SphinxMessaging` drops any other shape
   (`SphinxLogic.carried`: only those keys, each entry exactly `{pid, rid, blob}` in the relay's own formats, at most 20)
   and hands them to `Sphinx.wake`, which runs carried blobs through the same path a fetched one takes
   (`SphinxLogic.drain`, `Sphinx.handle`: pairing lookup, seal, counter, expiry), then fetches (`GET /v1/inbox`)
@@ -196,8 +209,18 @@ Inside every blob is one typed envelope, `{"v": 1, "kind": "<area>.<verb>", "rid
 `domains.request {}` / `domains.reply {ok, domains, groups}`, and `handoff.send {type: link|text|file, ...}` in either
 direction (laptop to phone as a request `'q'`; phone to laptop in its own direction `'p'`, no reply). Any other kind gets a sealed `error {ok: false, why: "unsupported kind"}` and
 nothing happens. Refused: wrong version or direction, a counter not above the last one taken, expired, an expiry more
-than 2 min out, a sealed rid that isn't the outer one. Test vectors: `extension/test/vectors.json` (made by
+than 2 min out, a sealed rid that isn't the outer one. Counters go through a replay window: one above the highest seen,
+or one of the last 32 skipped below it and not yet seen, is taken once (requests and replies may cross on the way). Test vectors: `extension/test/vectors.json` (made by
 pyca/cryptography with `extension/test/make_vectors.py`; checked by the Kotlin tests, the extension's tests and pytest).
+
+## Release signing
+An optional release signer (a small service on your own server that signs APKs; not part of this repository) is one
+more pairing (QR with `x=sign`, shown as Signer, at most one). It may send only `sign.approve {label, key, sha256, size,
+alias, cert_sha256, salt, unlock, fv}`, and no other pairing may send that. The phone shows the build, the key, its
+certificate, the pairing's tag and the whole sha256; a deliberate Approve tap on that screen, then the fingerprint,
+answers `sign.approve.reply {ok, k}`, where `k` is the secret of that one key file, derived on the phone from the
+unlock secret enrolled under Settings, Signing (v2 files bind the key's name, alias and certificate into it; v1 files
+are pinned to their salt). The unlock secret itself never leaves the phone.
 
 ## Threat model, in plain words
 - **What Google sees** (with the fast wake): the same sealed blobs the relay sees, their size and when they were sent,
@@ -208,9 +231,9 @@ pyca/cryptography with `extension/test/make_vectors.py`; checked by the Kotlin t
   could drop or delay requests, but can't read or forge one: forging needs the message key, which comes from the QR's
   secret and the X25519 exchange, neither of which the relay ever had. It can't swap in its own key at pairing either,
   because the phone's hello is MACed with the QR's secret.
-- **Who can register a pairing:** anyone who can reach the relay, unless you set `SPHINX_REGISTER_TOKEN` (then only a
-  QR carrying that token pairs). A registered pairing id can't be taken over, and the pid is 16 random bytes shown only
-  in the QR. Without the token, a stranger could fill your relay's pairing slots (a nuisance, not a breach).
+- **Who can register a pairing:** only a QR carrying the relay's `SPHINX_REGISTER_TOKEN`. The relay refuses to start
+  without one (unless `SPHINX_INSECURE_DEV=1`, local tests only; review 2026-10-27). A registered pairing id can't be
+  taken over, and the pid is 16 random bytes shown only in the QR.
 - **Phishing guard:** the laptop asks only on an exact saved site (subdomains only where you opted that site in), using
   the tab's and the frame's real hosts from Chrome (not anything the page says), and the phone checks again.
   `github.com.evil.io`, `evilgithub.com`, `github.co` and shared hosts like `github.io` never match. A lookalike page
@@ -310,3 +333,9 @@ code: the phone offers "Send ... to the laptop?"; send it with the fingerprint; 
 - Firebase's own libraries are in the app whenever it is built (they stay idle without `google-services.json`).
 - More message kinds (a tab to the phone, an unasked SMS code pushed to the laptop, clipboard sync) could ride the same
   pairing, each a new `kind` allowed by name on the receiving side. None is built.
+
+## Known limits (review 2026-10-27)
+- A signer that sends `fv=2` for a key the phone has pinned as v1 makes that legacy key unusable on the phone until it
+  is re-sealed to v2; it releases nothing.
+- A pairing offer that expires between the phone registering the pairing and the laptop taking its hello leaves a
+  pairing on the phone that the laptop never finished: unpair it on the phone (Laptops) and pair again.

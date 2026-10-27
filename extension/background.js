@@ -14,6 +14,15 @@ import { allowed, matches, normalize, patterns, savable, setPsl } from "./domain
 import { relayOrigin } from "./relay.js";
 
 const TTL = 60000;
+// A pairing offer (its QR) lives 10 minutes from when it was made (review 2026-10-27: they never expired).
+const OFFER_MS = 10 * 60 * 1000;
+export const offerFresh = (o, now = Date.now()) => !!o && typeof o.at === "number" && now - o.at >= 0 && now - o.at < OFFER_MS;
+/** The current offer, or null; an expired one is dropped on the way. */
+async function currentOffer() {
+  const o = await get("offer");
+  if (o && !offerFresh(o)) { await locked(async () => { const now = await get("offer"); if (now && !offerFresh(now)) await drop("offer"); }); return null; }
+  return o || null;
+}
 const RID = /^[A-Za-z0-9_-]{22}$/;
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
 const te = new TextEncoder(), td = new TextDecoder();
@@ -74,6 +83,18 @@ async function send(kind, body) {
   return { rid, pid: p.pid };
 }
 
+// The replay window (review 2026-10-27): a sealed counter is taken if it is above the highest seen, or one of the
+// counters skipped below it (`gaps`, at most WINDOW back) not yet seen. Two replies that cross on the way (or two
+// requests posted out of order) both arrive; each is still taken once. Pairings saved before have no gaps: strict.
+export const WINDOW = 32;
+export function windowFresh(ctr, recv, gaps = []) { return ctr > recv || gaps.includes(ctr); }
+export function windowAfter(ctr, recv, gaps = []) {
+  if (ctr <= recv) return { recv, gaps: gaps.filter((g) => g !== ctr) };
+  const skipped = [];
+  for (let g = Math.max(recv + 1, ctr - WINDOW + 1); g < ctr; g++) skipped.push(g);
+  return { recv: ctr, gaps: [...gaps, ...skipped].filter((g) => g > ctr - WINDOW) };
+}
+
 // One long poll (at most 25 s on the relay's side) for the envelope answering `rid`; null while there is none yet.
 async function receive(rid) {
   const p = await get("pairing");
@@ -83,12 +104,13 @@ async function receive(rid) {
   return locked(async () => {
     const now = await get("pairing");
     if (!now || now.pid !== p.pid) throw new Error("not paired");
-    const o = await open(now.p2l, now.pid, "r", r.blob, now.recv, Date.now());
+    const o = await open(now.p2l, now.pid, "r", r.blob, Math.max(0, now.recv - WINDOW), Date.now());
     if (!o.ok) throw new Error(`reply refused (${o.why})`);
+    if (!windowFresh(o.ctr, now.recv, now.gaps || [])) throw new Error("reply refused (replay)");
     let env;
     try { env = JSON.parse(td.decode(o.plain)); } catch { throw new Error("reply unreadable"); }
     if (!env || env.v !== 1 || env.rid !== rid || typeof env.kind !== "string" || typeof env.body !== "object" || env.body === null) throw new Error("reply for another request");
-    await put("pairing", { ...now, recv: Math.max(now.recv, o.ctr) });
+    await put("pairing", { ...now, ...windowAfter(o.ctr, now.recv, now.gaps || []) });
     return env;
   });
 }
@@ -130,9 +152,9 @@ async function phoneStatus(force = false) {
 // ---- the toolbar icon's dot, per tab (owner, 2026-10-26: "a green dot or red dot and a blinking dot") ----
 
 /**
- * The dot on the icon and the words in its tooltip. Red: not paired, or the phone isn't reachable. Saffron, blinking: a
+ * The dot on the icon and the words in its tooltip. Red: not paired, or the phone isn't reachable. White, blinking: a
  * request (a code, or a pre-approval) waits on the phone. Green: this tab's site is saved on the phone, or a code just
- * went in. Grey ("none"): paired, the phone reachable, a site that isn't saved.
+ * went in (jade). Grey ("none"): paired, the phone reachable, a site that isn't saved.
  */
 export function dotState({ paired, reachable, siteSaved, pending, filled }) {
   if (!paired) return { dot: "red", words: BADGE.unpaired.title };
@@ -142,8 +164,9 @@ export function dotState({ paired, reachable, siteSaved, pending, filled }) {
   if (siteSaved) return { dot: "green", words: "Sphinx: this site is saved on the phone" };
   return { dot: "none", words: BADGE.reachable.title };
 }
-// Strong colours: they fill the icon's background, so they have to read on any toolbar (owner, 2026-10-26).
-const DOT = { red: "#e53935", green: "#22a447", blink: "#ffab00", none: "#7d8590" };
+// Strong colours: they fill the icon's background, so they have to read on any toolbar (owner, 2026-10-26). The
+// basalt-and-jade palette: jade = saved site, white = the phone is asking, red = not reachable.
+const DOT = { red: "#f05a45", green: "#7fd6aa", blink: "#f2f2f2", none: "#7d8590" };
 
 const tabs = new Map();   // tab id -> {siteSaved, filled, rids: Map(rid -> until)}: in memory, gone with the worker
 const tabOf = (id) => { if (!tabs.has(id)) tabs.set(id, { siteSaved: false, filled: false, rids: new Map() }); return tabs.get(id); };
@@ -238,7 +261,7 @@ async function refreshDomains() {
 
 /** The relay's own permission (the pairing's, or the offer's while pairing): never dropped as a stale site grant. */
 async function relayPerms() {
-  const p = await get("pairing"), o = await get("offer");
+  const p = await get("pairing"), o = await currentOffer();
   return [p?.relay, o?.relay].filter(Boolean).map((r) => canonical(`${r}/*`));
 }
 
@@ -325,6 +348,16 @@ export function heldNow(h, site, now = Date.now()) {
   const t = now / 1000;
   return h.codes.find((c) => c.from <= t && t < c.until - 1) || null;   // a second's margin: it still has to be typed and sent
 }
+/**
+ * A held code for this ask only if it is the same pairing's and the same account's: another pairing, an unpair, or a
+ * user name the code field's page names that the pre-approval didn't (a name that became known, or another one) never
+ * gets it, and the phone is asked afresh (review 2026-10-27: the phone picked by the empty hint, the page named Bob).
+ */
+export function heldFor(h, site, pid, user, now = Date.now()) {
+  if (!h || !pid || h.pid !== pid) return null;
+  if (user && user !== h.user) return null;
+  return heldNow(h, site, now);
+}
 
 /** A code.reply for the document that asked, checked again at delivery: it may have navigated while the phone asked him. */
 async function delivered(s, rid, env) {
@@ -335,6 +368,9 @@ async function delivered(s, rid, env) {
   // A code from an SMS or email he sent with his fingerprint (via "text") may be 4-8 digits and is never submitted;
   // an authenticator code is 6-8 (owner, 2026-10-25).
   const text = b.via === "text";
+  // An authenticator code whose period ended on the way (the reply may take up to a minute) is never typed in and sent
+  // (review 2026-10-27): `until` is the unix second its period ends, with a second's margin to type it.
+  if (!text && b.ok && Number.isInteger(b.until) && Date.now() / 1000 >= b.until - 1) return { done: true, ok: false, why: "expired code" };
   return b.ok && typeof b.code === "string" && (text ? /^\d{4,8}$/ : /^\d{6,8}$/).test(b.code)
     ? { done: true, ok: true, code: b.code, account: typeof b.account === "string" ? b.account.slice(0, 60) : "", ...(text ? { via: "text" } : {}) }
     : { done: true, ok: false, why: typeof b.why === "string" ? b.why.slice(0, 40) : "refused" };
@@ -361,14 +397,14 @@ async function content(m, s) {
       readied.add(keyOf(s));
       let user = typeof m.user === "string" ? m.user.slice(0, 120) : "";
       if (!user) user = ((await chrome.storage.session.get("hints")).hints || {})[await siteKey(e.host)]?.user || "";
-      const { rid } = await send("code.ready", { host: e.host, frame: e.frame, user });
+      const { rid, pid } = await send("code.ready", { host: e.host, frame: e.frame, user });
       waitingOn(s.tab.id, rid, Date.now() + TTL);
       try {
         for (let i = 0; i < 3; i++) {
           const env = await receive(rid);
           if (!env) continue;
           const ok = env.kind === "code.ready.reply" && env.body.ok === true;
-          if (ok) { const h = heldCodes(env.body); if (h) held.set(s.tab.id, { ...h, site: await siteKey(e.host) }); }
+          if (ok) { const h = heldCodes(env.body); if (h) held.set(s.tab.id, { ...h, site: await siteKey(e.host), pid, user }); }
           return ok ? { ok: true } : { ok: false, why: typeof env.body.why === "string" ? env.body.why.slice(0, 40) : "refused" };
         }
         return { ok: false, why: "no answer" };
@@ -388,15 +424,16 @@ async function content(m, s) {
     case "ask": {
       const e = await eligible(s);
       if (!e) return { ok: false, why: "not a saved site" };
-      // A code his fingerprint already sent (code.ready): straight in, once, nothing asked of the phone.
-      const h = held.get(s.tab.id), c = heldNow(h, await siteKey(e.host));
+      let user = typeof m.user === "string" ? m.user.slice(0, 120) : "";
+      if (!user) user = ((await chrome.storage.session.get("hints")).hints || {})[await siteKey(e.host)]?.user || "";
+      // A code his fingerprint already sent (code.ready): straight in, once, nothing asked of the phone; only for this
+      // pairing and this account.
+      const h = held.get(s.tab.id), c = heldFor(h, await siteKey(e.host), (await get("pairing"))?.pid, user);
       if (h) held.delete(s.tab.id);
       if (c) { tabOf(s.tab.id).filled = true; paint(s.tab.id); return { ok: true, code: c.code, account: h.account }; }
       const old = waiting.get(keyOf(s));
       // The same document asking again gets its request back while it is fresh; once expired, a new one (he focused it later).
       if (old && old.exp > Date.now() && (await bound(s, old.rid))) return { ok: true, rid: old.rid };
-      let user = typeof m.user === "string" ? m.user.slice(0, 120) : "";
-      if (!user) user = ((await chrome.storage.session.get("hints")).hints || {})[await siteKey(e.host)]?.user || "";
       const { rid, pid } = await send("code.request", { host: e.host, frame: e.frame, user });
       const k = keyOf(s);
       waiting.set(k, { rid, pid, origin: e.origin, frameOrigin: e.frameOrigin, exp: Date.now() + TTL });
@@ -420,7 +457,7 @@ async function content(m, s) {
 async function options(m) {
   switch (m.t) {
     case "status": {
-      const p = await get("pairing"), o = await get("offer"), d = await get("domains");
+      const p = await get("pairing"), o = await currentOffer(), d = await get("domains");
       const granted = (await chrome.permissions.getAll()).origins || [];
       const phone = await phoneStatus().catch(() => null);
       return { paired: !!p, name: p?.name, relay: p?.relay || o?.relay || (await get("relayUrl")) || "", pending: !!o && !p, qr: o?.qr, domains: d?.list || [], domainsAt: d?.at || 0, granted,
@@ -442,7 +479,7 @@ async function options(m) {
     }
     case "hello": {
       // Polled by the options page while the QR is up. 401 until the phone has registered the pairing.
-      const o = await get("offer");
+      const o = await currentOffer();
       if (!o) return { paired: !!(await get("pairing")) };
       let h;
       try { h = await relay({ pid: o.pid, relay: o.relay, relayKey: b64u(await relayKey(o)) }, "GET", "/hello"); } catch { return { paired: false }; }
@@ -452,9 +489,10 @@ async function options(m) {
       // that got here first all win. A pairing already made from this offer is never overwritten (its counters stand).
       const took = await locked(async () => {
         const now = await get("offer"), cur = await get("pairing");
-        if (!now || now.gen !== o.gen || now.pid !== o.pid || (cur && cur.pid === o.pid)) return false;
+        if (!now || !offerFresh(now) || now.gen !== o.gen || now.pid !== o.pid || (cur && cur.pid === o.pid)) return false;
         await drop("offer");
         await put("pairing", { ...p, name: o.name, at: Date.now() });
+        held.clear();
         return true;
       });
       if (!took) return { paired: !!(await get("pairing")), stale: true };
@@ -468,6 +506,9 @@ async function options(m) {
     case "unpair": {
       await locked(() => drop(["pairing", "offer", "domains"]));
       waiting.clear();
+      // Codes held from the old pairing go with it.
+      held.clear();
+      readied.clear();
       await register();
       await phoneStatus(true).catch(() => {});
       await alarm();
@@ -486,7 +527,7 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
   return true;
 });
 
-chrome.runtime.onStartup.addListener(() => { register().catch(() => {}); phoneStatus(true).catch(() => {}); alarm(); });
+chrome.runtime.onStartup.addListener(() => { currentOffer().catch(() => {}); register().catch(() => {}); phoneStatus(true).catch(() => {}); alarm(); });
 chrome.runtime.onInstalled.addListener(() => { register().catch(() => {}); phoneStatus(true).catch(() => {}); alarm(); menus(); });   // an update replaces the old persistent registration
 chrome.permissions.onRemoved.addListener(() => { register().catch(() => {}); });
 // A tab that loads a new page loses its green (a saved site's content script says so again), but keeps blinking while a
@@ -530,7 +571,7 @@ async function inbox() {
 async function setInbox(list) {
   await chrome.storage.session.set({ inbox: list.slice(0, 20) });
   const n = list.length;
-  try { await chrome.action.setBadgeText({ text: n ? String(n) : "" }); await chrome.action.setBadgeBackgroundColor({ color: "#e8a33d" }); } catch { /* tests */ }
+  try { await chrome.action.setBadgeText({ text: n ? String(n) : "" }); await chrome.action.setBadgeBackgroundColor({ color: "#7fd6aa" }); } catch { /* tests */ }
 }
 
 /**

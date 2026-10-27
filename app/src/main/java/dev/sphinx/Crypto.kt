@@ -93,10 +93,14 @@ data class Pairing(
     val push: Boolean = false,
     /** The last phone-to-laptop handoff counter sent (direction 'p', its own counter beside the replies'). */
     val pushSent: Long = 0,
+    /** The release signer (its QR carried x=sign): it may ask only sign.approve, and only it may (docs/DESIGN.md, Release signing). */
+    val signer: Boolean = false,
+    /** Request counters skipped below [recv] and not yet seen ([ReplayWindow]): a request posted out of order still arrives once. */
+    val gaps: List<Long> = emptyList(),
 )
 
 /** The laptop's pairing QR, parsed. [token] is the relay's registration token, when it asks for one (not part of any key). */
-data class Offer(val pid: String, val laptop: ByteArray, val secret: ByteArray, val relay: String, val name: String, val token: String = "")
+data class Offer(val pid: String, val laptop: ByteArray, val secret: ByteArray, val relay: String, val name: String, val token: String = "", val signer: Boolean = false)
 
 /** What opening a blob gave: the plaintext, or the reason it was refused (for the log, never the content). */
 sealed class Opened {
@@ -107,8 +111,8 @@ sealed class Opened {
 
 /**
  * Sphinx's wire format, shared with the Chrome extension (extension/crypto.js, same test vectors):
- *  QR      sphinx:1?p=<pid>&k=<laptop X25519 public>&s=<16-byte secret>&r=<relay URL>&n=<name>[&t=<relay token>]
- *          (b64url, no padding)
+ *  QR      sphinx:1?p=<pid>&k=<laptop X25519 public>&s=<16-byte secret>&r=<relay URL>&n=<name>[&t=<relay token>][&x=sign]
+ *          (b64url, no padding; x=sign: the release signer, docs/DESIGN.md, Release signing)
  *  ecdh    X25519(phone private, laptop public); all-zero refused
  *  keys    HKDF-SHA256(ecdh, salt = secret, info = "sphinx v1|<pid>", 64): l2p = first 32, p2l = last 32
  *  relay   HKDF-SHA256(secret, salt = pid, info = "sphinx relay v1"): the relay's HMAC key, the only one it learns
@@ -140,7 +144,7 @@ object SphinxCrypto {
         val sec = q["s"]?.let(::dec)?.takeIf { it.size == 16 } ?: return null
         val relay = q["r"]?.trim()?.lowercase()?.trimEnd('/')?.takeIf { RELAY.matches(it) } ?: return null
         val token = q["t"]?.takeIf { Regex("^[A-Za-z0-9_-]{1,128}$").matches(it) }.orEmpty()
-        return Offer(pid, k, sec, relay, q["n"]?.trim()?.take(40)?.ifEmpty { null } ?: "Laptop", token)
+        return Offer(pid, k, sec, relay, q["n"]?.trim()?.take(40)?.ifEmpty { null } ?: "Laptop", token, signer = q["x"] == "sign")
     }
 
     private fun hmac(key: ByteArray, data: ByteArray): ByteArray = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(key, "HmacSHA256")) }.doFinal(data)
@@ -160,7 +164,7 @@ object SphinxCrypto {
             val keys = Hkdf.derive(shared, o.secret, "sphinx v1|${o.pid}", 64)
             shared.fill(0)
             val pub = X25519.publicKey(priv)
-            return Pairing(o.pid, o.name, keys.copyOfRange(0, 32), keys.copyOfRange(32, 64), o.relay, relayKey(o), added = now) to hello(o, pub)
+            return Pairing(o.pid, o.name, keys.copyOfRange(0, 32), keys.copyOfRange(32, 64), o.relay, relayKey(o), added = now, signer = o.signer) to hello(o, pub)
         } finally { priv.fill(0) }
     }
 

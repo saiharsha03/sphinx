@@ -34,6 +34,11 @@ data class HandoffItem(val type: String, val url: String? = null, val open: Bool
     }
 }
 
+/** How the share screen names the sharing app: unverified when it came from a referrer the app set itself. */
+object SharedBy {
+    fun label(name: String, verified: Boolean): String = if (verified) name else "$name (unverified)"
+}
+
 object HandoffRules {
     /** Plaintext bytes per file chunk, and at most this many: 8 MiB a file (the relay's caps, relay/sphinx_relay.py). */
     const val CHUNK = 512 * 1024
@@ -44,6 +49,26 @@ object HandoffRules {
     const val MAX_URL = 2048
     /** A phone-to-laptop handoff waits for the laptop's next look (every 30 s); open() refuses more than 2 min out. */
     const val PUSH_TTL_MS = 110_000L
+
+    /**
+     * Whether Sphinx may read a shared file: only a content:// URI another app's provider serves, never a file:// path
+     * (read as Sphinx, it would reach Sphinx's own files: backup/key.bin and state.bin) nor one of Sphinx's own
+     * providers ([own] is the package name; review 2026-10-27).
+     */
+    fun shareable(scheme: String?, authority: String?, own: String): Boolean =
+        scheme.equals("content", ignoreCase = true) && !authority.isNullOrBlank() &&
+            authority.split(';').none { a -> a.trim().let { it.equals(own, ignoreCase = true) || it.startsWith("$own.", ignoreCase = true) } }
+
+    /**
+     * Whether the sharing app granted Sphinx this [uri] itself: the read grant on the intent ([flags], as Android's
+     * FLAG_GRANT_READ_URI_PERMISSION) and the URI in its ClipData ([clip]). Android checks that the sharing app may grant
+     * it, so a document only Sphinx can read (one he picked in Sphinx before) can't be passed in without it (review
+     * 2026-10-27: Sphinx's own grants were enough).
+     */
+    fun granted(flags: Int, uri: String, clip: List<String>): Boolean = (flags and GRANT_READ) != 0 && uri in clip
+
+    /** Intent.FLAG_GRANT_READ_URI_PERMISSION. */
+    const val GRANT_READ = 0x1
 
     private val FID = Regex("^[A-Za-z0-9_-]{22}$")
     private val KEY = Regex("^[A-Za-z0-9_-]{43}$")

@@ -12,6 +12,7 @@ async function render() {
   setPsl(await (await fetch(chrome.runtime.getURL("public_suffix_list.dat"))).text());
   const s = await send({ t: "status" });
   $("paired").hidden = !s.paired;
+  $("danger").hidden = !s.paired;
   $("pair").hidden = s.paired;
   if (!$("relay").value) $("relay").value = s.relay || DEFAULT_RELAY;
   // This laptop's own relay token, from local.json beside the extension (written from Secrets, never in git), so

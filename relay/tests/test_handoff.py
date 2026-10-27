@@ -18,7 +18,7 @@ def relay(monkeypatch):
 
 @pytest.fixture
 def client(relay):
-    c = TestClient(hr.create_app(relay, register_token=""))
+    c = TestClient(hr.create_app(relay, register_token="", insecure_dev=True))
     assert c.post("/v1/pairings", json={"pid": PID, "key": b64(KEY), "hello": HELLO}).status_code == 200
     return c
 
