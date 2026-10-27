@@ -223,7 +223,12 @@ object Update {
             cancelled = false
             val started = System.currentTimeMillis()
             var tries = 0
+            fun stop(e: Exception, why: String) { Log.warn("update download failed", e.javaClass.simpleName); set(UpdateState.Failed(r, why)) }
             while (part.length() < r.size) {
+                // Every pass is bounded (Codex, 2026-10-27): the cancel and the deadline are checked here too, and a
+                // pass that added nothing, a restart or a retried relay error all count against the dozen.
+                if (cancelled || System.currentTimeMillis() - started > DEADLINE_MS) return stop(Stopped(), "The download took too long and was stopped. Try again: it goes on from where it stopped.")
+                if (++tries > TRIES) return stop(IOException("tries"), "The download kept failing. Try again: it goes on from where it stopped.")
                 val at = part.length()
                 try {
                     var last = at
@@ -238,20 +243,18 @@ object Update {
                             if (at > 0 && c.responseCode != 206) throw Restart()
                         })
                     }
+                    if (part.length() > at) tries = 0   // bytes came: the count is for passes that bring nothing
                 } catch (e: Exception) {
-                    live = null
-                    val fatal = e is Capped.TooBig || e is Stopped || cancelled || e is RelayClient.Failed || ++tries > TRIES
-                    if (e is Restart) { part.delete(); continue }
-                    if (!fatal) { Log.warn("update download retried", e.javaClass.simpleName); Thread.sleep(RETRY_MS); continue }
-                    if (e is Capped.TooBig) part.delete()
-                    Log.warn("update download failed", e.javaClass.simpleName)
-                    set(UpdateState.Failed(r, when {
-                        e is Capped.TooBig -> "The download is bigger than the release says."
-                        e is Stopped || cancelled -> "The download took too long and was stopped. Try again: it goes on from where it stopped."
-                        e is RelayClient.Failed -> "The relay refused the download (${e.status}). Try again later."
-                        else -> "The download kept failing (${e.javaClass.simpleName}). Try again: it goes on from where it stopped."
-                    }))
-                    return
+                    when {
+                        e is Capped.TooBig -> { part.delete(); return stop(e, "The download is bigger than the release says.") }
+                        e is Stopped || cancelled -> return stop(e, "The download took too long and was stopped. Try again: it goes on from where it stopped.")
+                        e is Restart -> part.delete()
+                        // The relay refused the offset (416: the file there changed) -> the part goes; a 5xx is tried again; any other status is final.
+                        e is RelayClient.Failed && e.status == 416 -> part.delete()
+                        e is RelayClient.Failed && e.status < 500 -> return stop(e, "The relay refused the download (${e.status}). Try again later.")
+                    }
+                    Log.warn("update download retried", e.javaClass.simpleName)
+                    Thread.sleep(RETRY_MS)
                 } finally { live = null }
             }
             if (!part.renameTo(file)) { part.delete(); return set(UpdateState.Failed(r, "The downloaded file couldn't be kept.")) }
@@ -382,7 +385,7 @@ object Update {
     private class Stopped : IOException("stopped")
     /** The relay sent the whole file where a range was asked: the part file is dropped and the download starts over. */
     private class Restart : IOException("restart")
-    /** How many broken transfers in a row are retried, and the pause between. */
+    /** How many passes in a row that bring no bytes (a broken transfer, a restart, a retried relay error) are made, and the pause between. */
     private const val TRIES = 12
     private const val RETRY_MS = 3_000L
 
