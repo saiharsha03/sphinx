@@ -515,3 +515,80 @@ test("a relay call in flight keeps the worker alive: an extension API call every
     assert.equal(pings, 2);                                 // nothing in flight: no more
   } finally { mock.timers.reset(); delete chrome.runtime.getPlatformInfo; }
 });
+
+// ---- 1.3.0 (the owner, 2026-10-27): what the phone sent stays until he removes it ----
+
+const POPUP = { id: "sphinx", url: "chrome-extension://sphinx/popup.html", origin: "chrome-extension://sphinx" };
+const fromPhone = async (rid, body, ctr) =>
+  ({ rid, blob: await seal(store.pairing.p2l, store.pairing.pid, "p", ctr, Date.now() + 100000, new TextEncoder().encode(JSON.stringify({ v: 1, kind: "handoff.send", rid, body }))) });
+const FILE = { fid: "Q".repeat(22), key: "K".repeat(43), name: "a.txt", mime: "text/plain", size: 3, chunks: 1, sha256: "0".repeat(64) };
+/** The relay as the handoff needs it: an outbox, and file chunks that are there or not. */
+let outbox = [], fileStatus = 404;
+const plain = globalThis.fetch;
+globalThis.fetch = async (url, init = {}) => {
+  const path = String(url).startsWith("chrome-extension://") ? "" : new URL(String(url)).pathname;
+  if (path === "/v1/outbox" && init.method === "GET") return { status: 200, ok: true, json: async () => ({ items: outbox }) };
+  if (path.startsWith("/v1/files/") && init.method === "GET") return fileStatus === 204 ? { status: 204, ok: true } : { status: fileStatus, ok: false };
+  return plain(url, init);
+};
+chrome.tabs = { create: async (o) => { opened.push(o.url); } };
+const opened = [];
+
+test("received items persist in storage.local, newest first, at most 200", async () => {
+  store.pairing = pairing(); delete store.inbox;
+  outbox = [await fromPhone("A".repeat(22), { type: "text", text: "first" }, 1), await fromPhone("B".repeat(22), { type: "link", url: "https://example.com/" }, 2)];
+  let r = await ask({ t: "inbox" }, POPUP);
+  outbox = [];
+  assert.deepEqual(r.items.map((x) => x.id[0]), ["B", "A"]);
+  assert.deepEqual(store.inbox.map((x) => x.id[0]), ["B", "A"]);              // storage.local, not the session
+  assert.deepEqual(Object.keys(store.inbox[0]).sort(), ["at", "id", "open", "type", "url"]);
+  assert.equal(badge.text, "2");
+  // Nothing drops with time.
+  store.inbox = store.inbox.map((x) => ({ ...x, at: x.at - 3 * 60 * 60 * 1000 }));
+  assert.equal((await ask({ t: "inbox" }, POPUP)).items.length, 2);
+  // Past 200 the oldest go.
+  store.inbox = [...store.inbox, ...Array.from({ length: 199 }, (_, i) => ({ id: `old${i}`, at: 1, type: "text", text: `t${i}` }))];
+  outbox = [await fromPhone("C".repeat(22), { type: "file", file: FILE }, 3)];
+  r = await ask({ t: "inbox" }, POPUP);
+  outbox = [];
+  assert.equal(r.items.length, 200);
+  assert.equal(r.items[0].id, "C".repeat(22));
+  assert.equal(r.items.at(-1).id, "old196");
+  assert.equal(badge.text, "200");
+});
+
+test("× removes one; Clear empties one section and leaves the other", async () => {
+  store.inbox = store.inbox.slice(0, 3);   // the file, the link, the text
+  assert.equal((await ask({ t: "dismiss", id: "A".repeat(22) }, POPUP)).ok, true);
+  assert.deepEqual(store.inbox.map((x) => x.type), ["file", "link"]);
+  assert.equal(badge.text, "2");
+  assert.equal((await ask({ t: "clear", section: "pictures" }, POPUP)).ok, false);
+  assert.equal((await ask({ t: "clear", section: "texts" }, POPUP)).ok, true);
+  assert.deepEqual(store.inbox.map((x) => x.type), ["file"]);
+  assert.equal(badge.text, "1");
+});
+
+test("a file the relay no longer has is marked gone, not dropped; a downloaded one is marked saved", async () => {
+  const id = "C".repeat(22);
+  fileStatus = 404;
+  let r = await ask({ t: "file", id }, POPUP);
+  assert.deepEqual([r.ok, r.gone], [false, true]);
+  assert.equal(store.inbox[0].gone, true);
+  assert.equal(store.inbox.length, 1);
+  assert.equal((await ask({ t: "file", id }, POPUP)).gone, true);   // not fetched again
+  // An empty answer for a chunk is the same.
+  store.inbox = [{ ...store.inbox[0], gone: undefined }]; fileStatus = 204;
+  assert.equal((await ask({ t: "file", id }, POPUP)).gone, true);
+  assert.equal(store.inbox[0].gone, true);
+  assert.equal((await ask({ t: "clear", section: "files" }, POPUP)).ok, true);
+  assert.deepEqual(store.inbox, []);
+  assert.equal(badge.text, "");
+});
+
+test("Open opens the link and keeps it listed", async () => {
+  store.inbox = [{ id: "B".repeat(22), at: 1, type: "link", url: "https://example.com/", open: false }];
+  assert.equal((await ask({ t: "openLink", id: "B".repeat(22) }, POPUP)).ok, true);
+  assert.deepEqual(opened, ["https://example.com/"]);
+  assert.equal(store.inbox.length, 1);
+  assert.equal((await ask({ t: "openLink", id: "zzz" }, POPUP)).ok, false);
+});

@@ -7,7 +7,6 @@ export const MAX_CHUNKS = 16;
 export const MAX_FILE = CHUNK * MAX_CHUNKS; // 8 MiB, the relay's per-file cap
 export const MAX_TEXT = 3000;               // bytes of UTF-8: the sealed envelope must stay under the relay's 4 KB
 export const MAX_URL = 2048;
-export const KEEP_MS = 10 * 60 * 1000;      // a received item is listed this long (the relay drops file chunks then too)
 
 const FID = /^[A-Za-z0-9_-]{22}$/, KEY = /^[A-Za-z0-9_-]{43}$/, HEX = /^[0-9a-f]{64}$/, MIME = /^[a-z0-9.+-]{1,60}\/[a-z0-9.+-]{1,60}$/i;
 const te = new TextEncoder();

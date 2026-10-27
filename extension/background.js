@@ -9,7 +9,7 @@
 // later kinds share. A code.reply may carry a code from an SMS or email (via "text"), sent with his fingerprint while
 // this request waited. A code.ready (his password went in) asks his fingerprint early; its reply never carries a code.
 import { b64u, finish, newOffer, open, openChunk, relayKey, seal, sealChunk, sha256Hex, signed, unb64u } from "./crypto.js";
-import { CHUNK, KEEP_MS, MAX_FILE, chunksFor, httpUrl, item, label, safeName } from "./handoff.js";
+import { CHUNK, MAX_FILE, chunksFor, httpUrl, item, label, safeName } from "./handoff.js";
 import { allowed, matches, normalize, patterns, savable, setPsl } from "./domains.js";
 import { relayOrigin } from "./relay.js";
 
@@ -653,17 +653,19 @@ async function sendFile(name, mime, data) {
   return handoff({ type: "file", file: { fid, key, name: safeName(name), mime, size: data.length, chunks, sha256: await sha256Hex(data) } });
 }
 
-/** What the phone sent, not yet dealt with: in storage.session (this browser session only), newest first. */
-async function inbox() {
-  await trusted;
-  const list = ((await chrome.storage.session.get("inbox")).inbox || []).filter((x) => Date.now() - x.at < KEEP_MS);
-  return list;
-}
+// What the phone sent, in storage.local (closed to content scripts, see `trusted`), newest first, kept until he removes
+// it with × or Clear (owner, 2026-10-27: it used to go with the browser session, or after 10 minutes). At most INBOX_MAX;
+// the oldest drop off. Each item: {id, at, type, url?, open?, text?, file?, saved?, gone?} (handoff.js `item`, plus a
+// file's state once he downloaded it, or the relay no longer had it).
+const INBOX_MAX = 200;
+const inbox = async () => (await get("inbox")) || [];
 async function setInbox(list) {
-  await chrome.storage.session.set({ inbox: list.slice(0, 20) });
-  const n = list.length;
-  try { await chrome.action.setBadgeText({ text: n ? String(n) : "" }); await chrome.action.setBadgeBackgroundColor({ color: "#7fd6aa" }); } catch { /* tests */ }
+  const kept = list.slice(0, INBOX_MAX);
+  await put("inbox", kept);
+  try { await chrome.action.setBadgeText({ text: kept.length ? String(kept.length) : "" }); await chrome.action.setBadgeBackgroundColor({ color: "#7fd6aa" }); } catch { /* tests */ }
 }
+/** One item changed in place (a file's state), by id. */
+const markInbox = async (id, change) => setInbox((await inbox()).map((x) => (x.id === id ? { ...x, ...change } : x)));
 
 /**
  * Phone to laptop: the laptop's outbox on the relay, opened with the phone-push direction 'p' and its own counter
@@ -703,14 +705,20 @@ async function pollOutbox() {
   return { ok: true, got: got.length };
 }
 
-/** A received file: its chunks down, opened, checked against the sealed size and sha256, then gone from the relay. */
+/**
+ * A received file: its chunks down, opened, checked against the sealed size and sha256, then gone from the relay.
+ * The relay keeps chunks about 10 minutes: a 404 or a missing chunk throws with `gone` set, so the item is kept and
+ * labelled, not treated as a broken download.
+ */
 async function fetchFile(f) {
   const p = await get("pairing");
   if (!p) throw new Error("not paired");
   const out = new Uint8Array(f.size);
   for (let n = 0; n < f.chunks; n++) {
-    const r = await relay(p, "GET", `/files/${f.fid}/${n}`);
-    const part = r && typeof r.blob === "string" ? await openChunk(f.key, f.fid, n, f.chunks, r.blob) : null;
+    let r;
+    try { r = await relay(p, "GET", `/files/${f.fid}/${n}`); } catch (e) { if (/^relay 404$/.test(String(e?.message))) throw Object.assign(new Error("no longer on the relay"), { gone: true }); throw e; }
+    if (!r || typeof r.blob !== "string") throw Object.assign(new Error("no longer on the relay"), { gone: true });
+    const part = await openChunk(f.key, f.fid, n, f.chunks, r.blob);
     if (!part || n * CHUNK + part.length > f.size) throw new Error("the file didn't arrive whole");
     out.set(part, n * CHUNK);
   }
@@ -733,20 +741,32 @@ async function popup(m) {
       await setInbox((await inbox()).filter((x) => x.id !== m.id));
       return { ok: true };
     }
+    case "clear": {
+      // One section at a time: "texts" is texts and links, "files" the files.
+      const files = m.section === "files";
+      if (!files && m.section !== "texts") return { ok: false, why: "unknown section" };
+      await setInbox((await inbox()).filter((x) => (x.type === "file") !== files));
+      return { ok: true };
+    }
     case "openLink": {
-      // His click on Open in the popup: only then does a tab open, and only for an http(s) link.
+      // His click on Open in the popup: only then does a tab open, and only for an http(s) link. The item stays listed.
       const it = (await inbox()).find((x) => x.id === m.id && x.type === "link");
       const url = it && httpUrl(it.url);
       if (!url) return { ok: false, why: "no such link" };
       await chrome.tabs.create({ url });
-      await setInbox((await inbox()).filter((x) => x.id !== m.id));
       return { ok: true };
     }
     case "file": {
       const it = (await inbox()).find((x) => x.id === m.id && x.type === "file");
       if (!it) return { ok: false, why: "no such file" };
-      const data = await fetchFile(it.file);
-      await setInbox((await inbox()).filter((x) => x.id !== m.id));
+      if (it.gone) return { ok: false, why: "no longer on the relay", gone: true };
+      let data;
+      try { data = await fetchFile(it.file); } catch (e) {
+        if (!e?.gone) throw e;
+        await markInbox(m.id, { gone: true });
+        return { ok: false, why: "no longer on the relay", gone: true };
+      }
+      await markInbox(m.id, { saved: true });
       return { ok: true, name: it.file.name, mime: it.file.mime, data: b64std(data) };
     }
     case "sendLink": return handoff({ type: "link", url: m.url, open: m.open === true });

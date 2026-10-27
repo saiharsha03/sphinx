@@ -11,37 +11,50 @@ function button(text, primary, onclick) {
   return b;
 }
 
+/** A file's state once it was downloaded, or the relay no longer had it; "" while it can still be fetched. */
+const fileState = (it) => (it.gone ? "No longer on the relay" : it.saved ? "Saved" : "");
+
+function row(it) {
+  const r = Object.assign(document.createElement("div"), { className: "item" });
+  r.append(Object.assign(document.createElement("span"), { textContent: label(it), title: it.type === "link" ? it.url : it.type === "text" ? it.text : it.file.name }));
+  // Copy and Open leave the item listed: only × (or Clear) removes it (the owner, 2026-10-27).
+  if (it.type === "link") {
+    r.append(button("Open", true, () => send({ t: "openLink", id: it.id })));
+    r.append(button("Copy", false, () => navigator.clipboard.writeText(it.url)));
+  } else if (it.type === "text") {
+    r.append(button("Copy", true, () => navigator.clipboard.writeText(it.text)));
+  } else if (fileState(it)) {
+    r.append(Object.assign(document.createElement("span"), { className: "state", textContent: fileState(it) }));
+  } else {
+    r.append(button("Download", true, async (e) => {
+      e.target.disabled = true; e.target.textContent = "Getting it…";
+      const f = await send({ t: "file", id: it.id });
+      if (!f?.ok) { if (f?.gone) render(); else e.target.textContent = f?.why || "Failed"; return; }
+      const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: f.mime }));
+      await chrome.downloads.download({ url, filename: f.name, saveAs: false, conflictAction: "uniquify" });
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      render();
+    }));
+  }
+  r.append(button("×", false, async () => { await send({ t: "dismiss", id: it.id }); render(); }));
+  return r;
+}
+
 async function render() {
   const r = await send({ t: "inbox" });
   $("unpaired").hidden = !!r?.paired;
   $("send").hidden = !r?.paired;
   const items = r?.items || [];
-  $("empty").hidden = items.length > 0;
-  $("items").replaceChildren(...items.map((it) => {
-    const row = Object.assign(document.createElement("div"), { className: "item" });
-    row.append(Object.assign(document.createElement("span"), { textContent: label(it), title: it.type === "link" ? it.url : it.type === "text" ? it.text : it.file.name }));
-    if (it.type === "link") {
-      row.append(button("Open", true, async () => { await send({ t: "openLink", id: it.id }); render(); }));
-      row.append(button("Copy", false, async () => { await navigator.clipboard.writeText(it.url); await send({ t: "dismiss", id: it.id }); render(); }));
-    } else if (it.type === "text") {
-      row.append(button("Copy", true, async () => { await navigator.clipboard.writeText(it.text); await send({ t: "dismiss", id: it.id }); render(); }));
-    } else {
-      row.append(button("Download", true, async (e) => {
-        e.target.disabled = true; e.target.textContent = "Getting it…";
-        const f = await send({ t: "file", id: it.id });
-        if (!f?.ok) { e.target.textContent = f?.why || "Failed"; return; }
-        const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
-        const url = URL.createObjectURL(new Blob([bytes], { type: f.mime }));
-        await chrome.downloads.download({ url, filename: f.name, saveAs: false, conflictAction: "uniquify" });
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
-        render();
-      }));
-    }
-    row.append(button("×", false, async () => { await send({ t: "dismiss", id: it.id }); render(); }));
-    return row;
-  }));
+  const texts = items.filter((it) => it.type !== "file"), files = items.filter((it) => it.type === "file");
+  $("texts").replaceChildren(...texts.map(row));
+  $("files").replaceChildren(...files.map(row));
+  $("clearTexts").disabled = !texts.length;
+  $("clearFiles").disabled = !files.length;
 }
 
+$("clearTexts").onclick = async () => { await send({ t: "clear", section: "texts" }); render(); };
+$("clearFiles").onclick = async () => { await send({ t: "clear", section: "files" }); render(); };
 $("continue").onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const r = await send({ t: "sendLink", url: tab?.url || "", open: true });

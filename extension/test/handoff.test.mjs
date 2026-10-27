@@ -107,7 +107,7 @@ test("a link opens only on the popup's Open, and only from the popup", async () 
   assert.equal(opened.length, 0);
   assert.equal((await ask({ t: "openLink", id }, POPUP)).ok, true);
   assert.deepEqual(opened, ["https://example.com/x"]);
-  assert.equal((await ask({ t: "inbox" }, POPUP)).items.length, 1);  // it is gone once opened
+  assert.equal((await ask({ t: "inbox" }, POPUP)).items.length, 2);  // it stays listed until he removes it (1.3.0)
 });
 
 test("sending: a link, a text, the right-click menu, and a file in chunks under its own key", async () => {
@@ -138,7 +138,7 @@ test("sending: a link, a text, the right-click menu, and a file in chunks under 
 });
 
 test("a received file downloads only through the popup, and must match its hash", async () => {
-  store.pairing = pairing(); session.inbox = [];
+  store.pairing = pairing(); store.inbox = [];
   const key = b64u(crypto.getRandomValues(new Uint8Array(32))), fid = "Q".repeat(22), data = new TextEncoder().encode("from the phone");
   files.set(`/v1/files/${fid}/0`, await sealChunk(key, fid, 0, 1, data));
   outbox = [await fromPhone("M".repeat(22), { type: "file", file: { fid, key, name: "note.txt", mime: "text/plain", size: data.length, chunks: 1, sha256: await sha256Hex(data) } }, 20)];
@@ -148,4 +148,5 @@ test("a received file downloads only through the popup, and must match its hash"
   const r = await ask({ t: "file", id: it.id }, POPUP);
   assert.equal(atob(r.data), "from the phone");
   assert.ok(calls.some(([m, p]) => m === "DELETE" && p === `/v1/files/${fid}`));
+  assert.equal(store.inbox.find((x) => x.id === it.id).saved, true);   // kept, marked
 });
