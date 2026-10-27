@@ -185,6 +185,7 @@
   // :autofill, which a page script can't set (owner, 2026-10-26: autofill wasn't seen until he clicked the field).
   const autofilled = (el) => { try { return el.matches(":autofill"); } catch { try { return el.matches(":-webkit-autofill"); } catch { return false; } } };
   async function ready(trigger, trusted, at) {
+    console.log("SPHINX", new Date().toISOString().slice(11, 23), "ready?", trigger, "done", readied, "field", passwords().some(visible), "visible", document.visibilityState);
     if (!D.shouldReady({ trigger, trusted, done: readied, filled, value: passwords().some((el) => el.value || autofilled(el)),
       field: passwords().some(visible), visible: document.visibilityState === "visible" })) return;
     readied = true;
@@ -193,7 +194,9 @@
     const el = at || passwords().find((p) => p.value || autofilled(p)) || passwords().find(visible);
     const user = D.userHint([...document.querySelectorAll("input")].map(desc), "") || remembered();
     if (el) say(el, "Sphinx: approve on your phone to have the code ready", true);
+    console.log("SPHINX", new Date().toISOString().slice(11, 23), "asking the phone (ready)");
     const r = await send({ t: "ready", user });
+    console.log("SPHINX", new Date().toISOString().slice(11, 23), "ready answer", JSON.stringify(r));
     if (el && document.contains(el)) say(el, r?.ok ? "Sphinx: the code is ready for 30 s" : `Sphinx: not ready (${r?.why || "no answer"})`);
   }
   const onPassword = (e) => { if (e.target instanceof HTMLInputElement && e.target.type === "password") ready(e.type, e.isTrusted, e.target); };

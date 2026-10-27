@@ -174,9 +174,10 @@ class Fcm:
         """In the background: the laptop's request call doesn't wait on Google."""
         def go():
             try:
+                t0 = time.time()
                 code = self.send_now(token, sphinx)
                 if self.audit:
-                    self.audit(f"wake {code}{' carried' if sphinx else ''}", pid)
+                    self.audit(f"wake {code}{' carried' if sphinx else ' NOT carried'} in {time.time() - t0:.2f}s", pid)
             except Exception as e:   # the type only: an FCM error can quote the token
                 if self.audit:
                     self.audit(f"wake failed {type(e).__name__}", pid)
@@ -498,7 +499,8 @@ async def _wait(get):
 
 
 def audit(what: str, pid: str) -> None:
-    log.info("%s %s", what, pid[:6])
+    # TIMING (2026-10-27): warning level so the journal shows it with its time.
+    log.warning("TIMING %.3f %s %s", time.time(), what, pid[:6])
 
 
 # ---- the encrypted backup (docs/DESIGN.md, "Backup") ----
@@ -754,11 +756,13 @@ def create_app(relay: Relay | None = None, register_token: str | None = None, ba
         # the app comes to the front, and on its heartbeat. (The old "?wait=0" is accepted and changes nothing.)
         pid, _ = await phone(request)
         items = relay.take(pid)
+        audit(f"inbox fetched {len(items or [])}", pid)
         return {"items": [{"rid": b["rid"], "blob": b["blob"]} for b in items or []]}
 
     @app.post("/v1/inbox/ack")
     async def inbox_ack(request: Request):
         pid, body = await phone(request)
+        audit("inbox ack", pid)
         return {"acked": relay.ack(pid, parse(AckBody, body).rids)}
 
     @app.post("/v1/push")
@@ -779,6 +783,7 @@ def create_app(relay: Relay | None = None, register_token: str | None = None, ba
         b = parse(BlobBody, body)
         _blob_ok(b.blob)
         relay.reply(pid, b.rid, b.blob)
+        audit("reply stored", pid)
         return {"ok": True}
 
     # ---- the laptop ----
@@ -939,7 +944,9 @@ def create_app(relay: Relay | None = None, register_token: str | None = None, ba
         pid, _ = await signed(request)
         if not RID.match(rid):
             raise HTTPException(400, "bad request id")
+        audit("reply poll start", pid)
         blob = await long_poll(pid, lambda: relay.pop_reply(pid, rid))
+        audit(f"reply poll end {'got' if blob else 'empty'}", pid)
         return {"blob": blob} if blob else Response(status_code=204)
 
     return app

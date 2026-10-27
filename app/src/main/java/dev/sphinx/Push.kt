@@ -84,7 +84,10 @@ class SphinxMessaging : FirebaseMessagingService() {
     override fun onMessageReceived(m: RemoteMessage) {
         val d = m.data
         if (d["t"] != "sync" || !d.keys.all { it == "t" || it == "sphinx" }) return
+        val t0 = System.currentTimeMillis()
+        Log.info("TIMING fcm wake received", "sent ${m.sentTime} delay ${t0 - m.sentTime} ms, carried ${d["sphinx"] != null}, priority ${m.priority}/${m.originalPriority}")
         runCatching { Sphinx.wake(applicationContext, SphinxLogic.carried(d["sphinx"])) }.onFailure { Log.warn("wake failed", it.javaClass.simpleName) }
+        Log.info("TIMING wake handled", "${System.currentTimeMillis() - t0} ms")
     }
 
     override fun onNewToken(token: String) {

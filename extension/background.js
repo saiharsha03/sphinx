@@ -70,8 +70,11 @@ async function relay(p, method, path, body) {
 const newRid = () => b64u(crypto.getRandomValues(new Uint8Array(16)));
 
 // One envelope out, sealed with the next counter. The counter is taken and saved under the lock.
+// TIMING (2026-10-27): every hop with the time, in this worker's console.
+export const T = (...a) => console.log(`SPHINX ${new Date().toISOString().slice(11, 23)}`, ...a);
 async function send(kind, body) {
   const rid = newRid();
+  T("send start", kind, rid.slice(0, 6));
   const { p, blob } = await locked(async () => {
     const p = await get("pairing");
     if (!p) throw new Error("not paired");
@@ -80,6 +83,7 @@ async function send(kind, body) {
     return { p, blob: await seal(p.l2p, p.pid, "q", ctr, Date.now() + TTL, te.encode(JSON.stringify({ v: 1, kind, rid, body }))) };
   });
   await relay(p, "POST", "/requests", { rid, blob });
+  T("send posted", kind, rid.slice(0, 6));
   return { rid, pid: p.pid };
 }
 
@@ -97,6 +101,7 @@ export function windowAfter(ctr, recv, gaps = []) {
 
 // One long poll (at most 25 s on the relay's side) for the envelope answering `rid`; null while there is none yet.
 async function receive(rid) {
+  T("poll reply", rid.slice(0, 6));
   const p = await get("pairing");
   if (!p) throw new Error("not paired");
   const r = await relay(p, "GET", `/replies/${rid}`);
@@ -524,8 +529,9 @@ async function options(m) {
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
   // Only this extension's own scripts can reach here (no externally_connectable); still, each side gets its own set.
   if (sender.id !== chrome.runtime.id || !m || typeof m !== "object" || typeof m.t !== "string") return false;
+  T("message", m.t, sender.tab?.url ? new URL(sender.tab.url).host : "");
   const run = fromOptions(sender) ? options(m) : fromPopup(sender) ? popup(m) : fromContent(sender) ? content(m, sender) : Promise.resolve({ ok: false, why: "unknown sender" });
-  run.then(reply, (e) => reply({ ok: false, why: String(e?.message || e).slice(0, 80) }));
+  run.then((r) => { T("answer", m.t, JSON.stringify(r)?.slice(0, 80)); reply(r); }, (e) => { T("error", m.t, String(e?.message || e)); reply({ ok: false, why: String(e?.message || e).slice(0, 80) }); });
   return true;
 });
 
