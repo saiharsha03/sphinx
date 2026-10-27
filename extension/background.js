@@ -341,7 +341,7 @@ export function heldCodes(body, now = Date.now()) {
   const end = Math.floor(now / 1000) + 30;
   const codes = body.codes.filter((c) => c && typeof c.code === "string" && /^\d{6,8}$/.test(c.code) && Number.isInteger(c.from) && Number.isInteger(c.until) && c.until > c.from)
     .map((c) => ({ code: c.code, from: c.from, until: Math.min(c.until, end) })).slice(0, 4);
-  return codes.length ? { account: typeof body.account === "string" ? body.account.slice(0, 60) : "", codes } : null;
+  return codes.length ? { account: typeof body.account === "string" ? body.account.slice(0, 60) : "", only: body.only === true, codes } : null;
 }
 export function heldNow(h, site, now = Date.now()) {
   if (!h || h.site !== site) return null;
@@ -352,10 +352,12 @@ export function heldNow(h, site, now = Date.now()) {
  * A held code for this ask only if it is the same pairing's and the same account's: another pairing, an unpair, or a
  * user name the code field's page names that the pre-approval didn't (a name that became known, or another one) never
  * gets it, and the phone is asked afresh (review 2026-10-27: the phone picked by the empty hint, the page named Bob).
+ * Unless the phone said the site has only that one account: then no name can mean another (the owner, 2026-10-27: the
+ * second fingerprint on every sign-in was too slow).
  */
 export function heldFor(h, site, pid, user, now = Date.now()) {
   if (!h || !pid || h.pid !== pid) return null;
-  if (user && user !== h.user) return null;
+  if (user && user !== h.user && !h.only) return null;
   return heldNow(h, site, now);
 }
 

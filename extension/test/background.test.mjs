@@ -401,6 +401,10 @@ test("held codes are bound to the pairing and the account, and an unpair drops t
   const blind = { ...h, user: "" };
   assert.equal(heldFor(blind, "github.com", "P".repeat(22), "bob", now), null);
   assert.equal(heldFor(blind, "github.com", "P".repeat(22), "", now)?.code, "111111");
+  // The phone said the site has only that account: a name the page shows later can't mean another, so no second ask.
+  const only = { ...heldCodes({ account: "w", only: true, codes: [{ code: "111111", from: 1_000_000_020, until: 1_000_000_050 }] }, now), site: "github.com", pid: "P".repeat(22), user: "" };
+  assert.equal(heldFor(only, "github.com", "P".repeat(22), "bob", now)?.code, "111111");
+  assert.equal(heldFor(only, "github.com", "Q".repeat(22), "bob", now), null);           // still this pairing's only
   assert.equal(heldFor(h, "github.com", "Q".repeat(22), "w", now), null);              // another pairing
   assert.equal(heldFor(h, "github.com", undefined, "w", now), null);                   // unpaired
   assert.equal(heldFor(h, "github.com", "P".repeat(22), "other", now), null);           // another account

@@ -223,11 +223,12 @@ object SphinxLogic {
      * expires", "hold only for 30 seconds"): each with the unix seconds it is good from and until, the last cut at the
      * window's end, so the code field fills with no trip to the phone. The laptop keeps them in memory only.
      */
-    fun held(a: CodeAccount, times: List<Long>, codes: List<String>, now: Long): Map<String, Any?> {
+    fun held(a: CodeAccount, times: List<Long>, codes: List<String>, now: Long, only: Boolean = false): Map<String, Any?> {
         val end = (now + WINDOW_MS) / 1000
         val list = times.zip(codes).map { (t, code) -> val from = t / 1000 / a.period * a.period; Triple(from, minOf(from + a.period, end), code) }
             .distinctBy { it.first }.filter { it.second > it.first }
-        return mapOf("account" to a.name.ifBlank { a.issuer }, "codes" to list.map { (f, u, code) -> mapOf("code" to code, "from" to f, "until" to u) })
+        // [only]: the site has this one account on the phone, so a user name the page shows later can't mean another.
+        return mapOf("account" to a.name.ifBlank { a.issuer }, "only" to only, "codes" to list.map { (f, u, code) -> mapOf("code" to code, "from" to f, "until" to u) })
     }
 
     /** "No" in the kind the request was. */

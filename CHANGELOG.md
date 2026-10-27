@@ -13,6 +13,10 @@ A new look, and the fixes from an independent security review (four rounds, thre
 - The extension's popup, options page, on-page note and toolbar colours to match (jade, white blinking, red, grey).
 - Passcode fields have Show / Hide.
 
+**Codes**
+- A code held for a sign-in also serves a page that names the user when the site has only one account on the phone,
+  so that sign-in needs one fingerprint, not two. With several accounts the held code still goes only to the one picked.
+
 **Backup**
 - Turning the relay backup on, moving it, changing its passcode, and turning the phrase on need a fresh fingerprint on
   the codes key; changing the passcode or the relay also needs the current passcode. A relay restore asks for your

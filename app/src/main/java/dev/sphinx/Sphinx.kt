@@ -144,7 +144,7 @@ object Sphinx {
             val times = SphinxLogic.windowTimes(now, a.period)
             val codes = SphinxStore.get(c).codes(a, u, times)
             window.open(SphinxLogic.prime(p, a, codes, now))
-            send(c, p.pid, rid, SphinxLogic.readied(rid, true, held = SphinxLogic.held(a, times, codes, now)))
+            send(c, p.pid, rid, SphinxLogic.readied(rid, true, held = SphinxLogic.held(a, times, codes, now, only = p.accounts.size == 1)))
             Log.info("pre-approval from ${p.host}: approved", a.issuer.take(40))
             // A code request that came while this one was on screen gets its code now; any other that waited on it, a prompt.
             pending.values.filter { !it.ready }.sortedBy { it.expires }.firstOrNull { serve(c, it) }?.let { pending.remove(it.waitId); riders.remove(it.waitId); publish() }

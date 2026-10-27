@@ -80,7 +80,8 @@ welcome to run your own copy, but there is no hosted service, no app store build
   types it in and submits the form, only if the form posts back to that same site.
 - **The code ready before the field asks.** When a saved site's sign-in page opens with a visible password field, the
   phone asks to have the code ready. One fingerprint covers that sign-in: the laptop holds the next codes for 30
-  seconds, in memory only, for that pairing and that account, and the code field fills instantly.
+  seconds, in memory only, for that pairing and that account, and the code field fills instantly. When the site has
+  only one account on the phone, a page that later shows your user name still uses the held code (no second fingerprint).
 - **Codes that arrive by text or email.** While a laptop request is waiting, a code in an SMS or email notification is
   offered: "Send 482913 to the laptop?". It is typed in, never submitted, so you check it first. Sites that only text
   codes can be listed in Settings.
