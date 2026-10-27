@@ -37,7 +37,7 @@ test("tells the phone a sign-in started once a password is in: his own input or 
   assert.equal(shouldReady(s({ trigger: "focus" })), false);
 });
 
-test("asks as soon as a visible sign-in page opens, before any password is in (owner, 2026-10-26)", () => {
+test("asks as soon as a visible sign-in page opens, before any password is in (the owner, 2026-10-26)", () => {
   const s = (o) => ({ trigger: "page", trusted: true, done: false, filled: false, value: false, field: true, visible: true, ...o });
   assert.equal(shouldReady(s()), true);
   assert.equal(shouldReady(s({ field: false })), false);        // no password field: already signed in
@@ -54,9 +54,14 @@ test("asks once on its own when the field appears, and on every click while none
   assert.equal(shouldAsk(s({ trigger: "seen", filled: true })), false);
   assert.equal(shouldAsk(s({ trigger: "seen", busy: true })), false);
   assert.equal(shouldAsk(s({ trigger: "focus", autoDone: true, busy: true })), false);     // one in flight
-  // owner, 2026-10-26: no waiting a minute: denied, expired, or a code the site turned down, a click asks again.
+  // the owner, 2026-10-26: no waiting a minute: denied, expired, or a code the site turned down, a click asks again.
   for (const ended of ["expired", "no answer", "error", "denied", "no account", null]) assert.equal(shouldAsk(s({ trigger: "focus", autoDone: true, ended })), true, String(ended));
   assert.equal(shouldAsk(s({ trigger: "focus", autoDone: true, filled: true })), true);
+  // 2026-10-27: a click within 5 s of a fill, the code still in the field, asks nothing; the field cleared, or later, asks.
+  assert.equal(shouldAsk(s({ trigger: "focus", autoDone: true, filled: true, sinceFill: 1400, fieldEmpty: false })), false);
+  assert.equal(shouldAsk(s({ trigger: "focus", autoDone: true, filled: true, sinceFill: 1400, fieldEmpty: true })), true);
+  assert.equal(shouldAsk(s({ trigger: "focus", autoDone: true, filled: true, sinceFill: 5000, fieldEmpty: false })), true);
+  assert.equal(shouldAsk(s({ trigger: "focus", autoDone: true, filled: false, sinceFill: 1400, fieldEmpty: false })), true);
 });
 
 test("finds one-time-code fields", () => {
@@ -93,10 +98,10 @@ test("split one-box-per-digit fields", () => {
 
 test("the user name hint", () => {
   assert.equal(userHint([{ autocomplete: "username", value: "work@example.com" }], ""), "work@example.com");
-  assert.equal(userHint([{ name: "login", value: "alex-work" }], ""), "alex-work");
-  assert.equal(userHint([], "Two-factor authentication. Signed in as alex-dev"), "alex-dev");
+  assert.equal(userHint([{ name: "login", value: "harsha-work" }], ""), "harsha-work");
+  assert.equal(userHint([], "Two-factor authentication. Signed in as harsha-dev"), "harsha-dev");
   assert.equal(userHint([], "Enter the code sent for your account"), null);
-  assert.equal(userHint([], "Hi, a.lee@example.org! Enter the code."), "a.lee@example.org");
+  assert.equal(userHint([], "Hi, h.rudra@example.org! Enter the code."), "h.rudra@example.org");
   assert.equal(userHint([{ name: "otp", value: "123" }], "nothing"), null);
   // A password is never a hint, whatever its field is called.
   assert.equal(userHint([{ type: "password", name: "account_password", value: "hunter2" }], ""), null);
@@ -119,7 +124,7 @@ test("domain guard: an exact host by default, subdomains only for a *. site", ()
 
 test("public suffixes from the real list, private ones and exception rules included", () => {
   for (const d of ["co.uk", "co.id", "eu.org", "github.io", "*.github.io", "vercel.app", "com", "foo.ck", "*.co.id", "s3.amazonaws.com"]) assert.equal(savable(d), null, d);
-  for (const [d, want] of [["alex.github.io", "alex.github.io"], ["bbc.co.uk", "bbc.co.uk"], ["www.ck", "ck"], ["city.kawasaki.jp", "city.kawasaki.jp"], ["wordpress.com", "wordpress.com"], ["*.example.eu.org", "*.example.eu.org"]])
+  for (const [d, want] of [["harsha.github.io", "harsha.github.io"], ["bbc.co.uk", "bbc.co.uk"], ["www.ck", "ck"], ["city.kawasaki.jp", "city.kawasaki.jp"], ["wordpress.com", "wordpress.com"], ["*.example.eu.org", "*.example.eu.org"]])
     assert.equal(savable(d), want === "ck" ? null : want, d);
   assert.ok(!matches("someone-else.github.io", "github.io"));
   assert.ok(!matches("anything.com", "com"));

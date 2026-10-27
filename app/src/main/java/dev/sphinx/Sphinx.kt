@@ -147,7 +147,8 @@ object Sphinx {
             send(c, p.pid, rid, SphinxLogic.readied(rid, true, held = SphinxLogic.held(a, times, codes, now, only = p.accounts.size == 1)))
             Log.info("pre-approval from ${p.host}: approved", a.issuer.take(40))
             // A code request for this site still waiting gets its code now.
-            pending.values.filter { !it.ready }.sortedBy { it.expires }.firstOrNull { serve(c, it) }?.let { pending.remove(it.waitId); publish() }
+            // Served: its own banner goes too (Fable, 2026-10-27: it stayed up for a request already answered).
+            pending.values.filter { !it.ready }.sortedBy { it.expires }.firstOrNull { serve(c, it) }?.let { pending.remove(it.waitId); publish(); cancelAsk(c) }
             return true
         }
         val code = SphinxStore.get(c).code(a, u, now)
@@ -174,7 +175,8 @@ object Sphinx {
     fun expire(c: Context) {
         val now = System.currentTimeMillis()
         for (p in pending.values.filter { it.expires <= now }) {
-            pending.remove(p.waitId)
+            // Gone already (superseded, denied, approved): its answer went; never a second reply under its rid (Fable, 2026-10-27).
+            if (pending.remove(p.waitId) == null) continue
             dropText(c, p.waitId)
             runCatching { send(c, p.pid, p.rid, SphinxLogic.no(p, "expired")) }
             Log.info((if (p.ready) "pre-approval from " else "request from ") + "${p.host}: expired")
@@ -206,13 +208,16 @@ object Sphinx {
 
     /** The site's pre-approvals still unanswered when code request [r] arrives go, each laptop told "superseded". */
     private fun supersede(c: Context, r: Pending) {
-        val gone = SphinxLogic.supersedes(pending.values, r, System.currentTimeMillis())
+        // Taken only while still the very request waiting (take): one approved or expired meanwhile keeps its own answer,
+        // so no second reply ever goes out under its rid (Codex, 2026-10-27).
+        val gone = SphinxLogic.supersedes(pending.values, r, System.currentTimeMillis()).filter { pending.take(it) }
+        if (gone.isEmpty()) return
+        publish()
+        // The laptops are told off this thread: a slow relay must not hold the new prompt back (Codex, 2026-10-27).
         for (p in gone) {
-            pending.remove(p.waitId)
-            runCatching { send(c, p.pid, p.rid, SphinxLogic.no(p, "superseded")) }
             Log.info("pre-approval from ${p.host}: superseded by the code request")
+            Thread { runCatching { send(c, p.pid, p.rid, SphinxLogic.no(p, "superseded")) }.onFailure { Log.warn("superseded not sent", it.javaClass.simpleName) } }.start()
         }
-        if (gone.isNotEmpty()) publish()
     }
 
     // ---- the prompt ----

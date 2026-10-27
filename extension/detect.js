@@ -66,7 +66,7 @@
    * trigger "seen": the field was found on this page (load, or it appeared); asks once per page (`autoDone`), so DOM
    * changes never ask again, and not after a fill. trigger "focus": he clicked into it; asks whenever no request is in
    * flight, whatever ended the last one (denied, expired, a code the site turned down): his click is the ask, never held
-   * back for a minute (owner, 2026-10-26). The relay's per-pairing rate (10 a minute) is what protects against a loop.
+   * back for a minute (the owner, 2026-10-26). The relay's per-pairing rate (10 a minute) is what protects against a loop.
    */
   /**
    * Whether a form's action attribute ([action], as written: "" posts to the page itself) resolved against [base]
@@ -79,15 +79,19 @@
     try { return new URL(action, base).origin === origin; } catch { return false; }
   }
 
-  function shouldAsk({ trigger, busy, filled, autoDone }) {
+  // A click within REASK_MS of a fill, with the code still in the field (the site is still checking it), asks nothing;
+  // the site clearing the field (it turned the code down) asks at once (owner, 2026-10-27: a click 1.4 s after the
+  // fill put a third prompt on the phone).
+  const REASK_MS = 5000;
+  function shouldAsk({ trigger, busy, filled, autoDone, sinceFill = Infinity, fieldEmpty = true }) {
     if (busy) return false;
     if (trigger === "seen") return !autoDone && !filled;
-    if (trigger === "focus") return true;
+    if (trigger === "focus") return !(filled && sinceFill < REASK_MS && !fieldEmpty);
     return false;
   }
 
   /**
-   * When the content script tells the phone a sign-in has started (code.ready, owner 2026-10-26: "prefetch the code
+   * When the content script tells the phone a sign-in has started (code.ready, the owner 2026-10-26: "prefetch the code
    * when password is being entered or autofilled"): a password field holds a value, once per page, never after a code
    * went in. trigger "input", "change" or "submit" counts only for his own (trusted) event, so a page script can't fire
    * it; "load" is our own read of an autofilled value shortly after load. "page" (owner, 2026-10-26: ask when the

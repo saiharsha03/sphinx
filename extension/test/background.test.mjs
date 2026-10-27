@@ -222,7 +222,7 @@ test("pairing and unpairing come from the options page only", async () => {
   assert.equal(store.pairing, undefined);
 });
 
-// ---- 1.0.5 (owner, 2026-10-25): texted codes, asking again after expiry, the pairing badge ----
+// ---- 1.0.5 (the owner, 2026-10-25): texted codes, asking again after expiry, the pairing badge ----
 
 /** The phone's sealed answer to `rid`, as the relay would hand it back. */
 async function phoneReply(rid, body, ctr, kind = "code.reply") {
@@ -359,21 +359,25 @@ test("a password going in sends code.ready once per page with the tab's site; it
   assert.equal((await again())._test.tabs.get(21)?.rids.size ?? 0, 0);                   // nothing left blinking
 });
 
-// owner, 2026-10-26: the codes his fingerprint sent ahead fill the field with no trip to the phone, for 30 s at most.
-test("held codes: only well-formed ones, cut at 30 s, used only on the same site and inside their time", () => {
+// the owner, 2026-10-26: the codes his fingerprint sent ahead fill the field with no trip to the phone, for 60 s at most (30 until 2026-10-27).
+test("held codes: only well-formed ones, cut at 60 s, used only on the same site and inside their time", () => {
   const now = 1_000_000_040_000;
   const h = heldCodes({ account: "GitHub", codes: [
     { code: "111111", from: 1_000_000_020, until: 1_000_000_050 },
     { code: "222222", from: 1_000_000_050, until: 1_000_000_999 },
     { code: "12ab56", from: 1_000_000_050, until: 1_000_000_080 } ] }, now);
   assert.deepEqual(h.codes.map((c) => c.code), ["111111", "222222"]);
-  assert.equal(h.codes[1].until, 1_000_000_070);                                   // never past the 30 s
+  assert.equal(h.codes[1].until, 1_000_000_100);                                   // never past the 60 s
   const at = { ...h, site: "github.com" };
   assert.equal(heldNow(at, "github.com", now)?.code, "111111");
   assert.equal(heldNow(at, "github.com", 1_000_000_055_000)?.code, "222222");
   assert.equal(heldNow(at, "gitlab.com", now), null);                               // another site
-  assert.equal(heldNow(at, "github.com", 1_000_000_069_500), null);                 // the last second: ask the phone
+  assert.equal(heldNow(at, "github.com", 1_000_000_099_500), null);                 // the last second: ask the phone
   assert.equal(heldCodes({ ok: true }, now), null);
+  // 15 s periods: the 60 s window touches five, all kept (Codex, 2026-10-27).
+  const five = heldCodes({ codes: Array.from({ length: 5 }, (_, i) => ({ code: String(100000 + i), from: 1_000_000_030 + 15 * i, until: 1_000_000_045 + 15 * i })) }, now);
+  assert.equal(five.codes.length, 5);
+  assert.equal(five.codes[4].until, 1_000_000_100);
 });
 
 test("the relay must be an https origin, and its token rides in the QR only when set", async () => {

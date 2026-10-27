@@ -170,7 +170,7 @@ async function receive(rid) {
   });
 }
 
-// ---- the phone's state: not paired, reachable, asleep (owner, 2026-10-25); the icon's dot shows it ----
+// ---- the phone's state: not paired, reachable, asleep (the owner, 2026-10-25); the icon's dot shows it ----
 
 // What the icon calls "reachable": the phone reached the gateway in the last 30 minutes (it checks in about every 15,
 // its heartbeat). Only what the icon says; asking is never held back by it, a sleeping phone still wakes on a request.
@@ -219,7 +219,7 @@ export function dotState({ paired, reachable, siteSaved, pending, filled }) {
   if (siteSaved) return { dot: "green", words: "Sphinx: this site is saved on the phone" };
   return { dot: "none", words: BADGE.reachable.title };
 }
-// Strong colours: they fill the icon's background, so they have to read on any toolbar (owner, 2026-10-26). The
+// Strong colours: they fill the icon's background, so they have to read on any toolbar (the owner, 2026-10-26). The
 // basalt-and-jade palette: jade = saved site, white = the phone is asking, red = not reachable.
 const DOT = { red: "#f05a45", green: "#7fd6aa", blink: "#f2f2f2", none: "#7d8590" };
 
@@ -378,7 +378,7 @@ async function bound(s, rid) {
 }
 
 // The user name he typed, kept for the saved site that covers the page (not the page's own origin): AWS asks for it on
-// signin.aws.amazon.com and for the code on us-east-1.signin.aws.amazon.com (owner, 2026-10-23). Browser session only.
+// signin.aws.amazon.com and for the code on us-east-1.signin.aws.amazon.com (the owner, 2026-10-23). Browser session only.
 async function siteKey(host) {
   const groups = (await get("domains"))?.groups || [];
   return [...new Set(groups.flat().filter((d) => matches(host, d)))].sort().join("|");
@@ -388,14 +388,15 @@ async function siteKey(host) {
 const readied = new Set();
 
 // The codes his fingerprint on a code.ready sent ahead, per tab: {site, account, codes: [{code, from, until}]}, in memory
-// only (gone with the worker), for the window's 30 s at most, and used once (owner, 2026-10-26: "hold it", "hold only
+// only (gone with the worker), for the window's 60 s at most (30 until 2026-10-27), and used once (owner, 2026-10-26: "hold it", "hold only
 // for 30 seconds"). The code field of the same site in the same tab fills from them with no trip to the phone.
 const held = new Map();
 export function heldCodes(body, now = Date.now()) {
   if (!Array.isArray(body?.codes)) return null;
-  const end = Math.floor(now / 1000) + 30;
+  const end = Math.floor(now / 1000) + 60;
   const codes = body.codes.filter((c) => c && typeof c.code === "string" && /^\d{6,8}$/.test(c.code) && Number.isInteger(c.from) && Number.isInteger(c.until) && c.until > c.from)
-    .map((c) => ({ code: c.code, from: c.from, until: Math.min(c.until, end) })).slice(0, 4);
+    // Up to 8: a 60 s window touches 5 periods of 15 s, 7 of 10 (Codex, 2026-10-27: a cap of 4 dropped the fifth).
+    .map((c) => ({ code: c.code, from: c.from, until: Math.min(c.until, end) })).slice(0, 8);
   return codes.length ? { account: typeof body.account === "string" ? body.account.slice(0, 60) : "", only: body.only === true, codes } : null;
 }
 export function heldNow(h, site, now = Date.now()) {
@@ -407,7 +408,7 @@ export function heldNow(h, site, now = Date.now()) {
  * A held code for this ask only if it is the same pairing's and the same account's: another pairing, an unpair, or a
  * user name the code field's page names that the pre-approval didn't (a name that became known, or another one) never
  * gets it, and the phone is asked afresh (review 2026-10-27: the phone picked by the empty hint, the page named Bob).
- * Unless the phone said the site has only that one account: then no name can mean another (the owner, 2026-10-27: the
+ * Unless the phone said the site has only that one account: then no name can mean another (owner, 2026-10-27: the
  * second fingerprint on every sign-in was too slow).
  */
 export function heldFor(h, site, pid, user, now = Date.now()) {
@@ -423,7 +424,7 @@ async function delivered(s, rid, env) {
   if (env.kind !== "code.reply") return { done: true, ok: false, why: typeof env.body.why === "string" ? env.body.why.slice(0, 40) : "refused" };
   const b = env.body;
   // A code from an SMS or email he sent with his fingerprint (via "text") may be 4-8 digits and is never submitted;
-  // an authenticator code is 6-8 (owner, 2026-10-25).
+  // an authenticator code is 6-8 (the owner, 2026-10-25).
   const text = b.via === "text";
   // An authenticator code whose period ended on the way (the reply may take up to a minute) is never typed in and sent
   // (review 2026-10-27): `until` is the unix second its period ends, with a second's margin to type it.
@@ -446,7 +447,7 @@ async function content(m, s) {
     }
     case "ready": {
       // His password went in on a saved site (content.js, shouldReady): the phone asks him now, and his yes covers the code
-      // the site asks for next, for 30 s, on the phone (code.ready, owner 2026-10-26). The answer carries no code. The
+      // the site asks for next, for 60 s, on the phone (code.ready, the owner 2026-10-26). The answer carries no code. The
       // site is the tab's (from Chrome), as for a code; once per document.
       const e = await eligible(s);
       if (!e) return { ok: false, why: "not a saved site" };

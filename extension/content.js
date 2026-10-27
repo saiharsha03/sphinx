@@ -103,9 +103,10 @@
   const send = (m) => new Promise((ok) => chrome.runtime.sendMessage(m, (r) => ok(chrome.runtime.lastError ? { ok: false, why: chrome.runtime.lastError.message } : r)));
 
   // One request in flight at a time; `filled` once a code went in; `ended` is why the last one ended without a code.
-  let busy = false, filled = false, ended = null;
+  let busy = false, filled = false, ended = null, filledAt = 0;
   const auto = new Set();   // the pages (URLs) of this document already asked for on their own: once each, never per DOM change
-  const may = (trigger) => D.shouldAsk({ trigger, busy, filled, autoDone: auto.has(location.href), ended });
+  const may = (trigger, t) => D.shouldAsk({ trigger, busy, filled, autoDone: auto.has(location.href), ended,
+    sinceFill: filled ? Date.now() - filledAt : Infinity, fieldEmpty: !t || !t.fields.some((f) => f.value) });
 
   async function go(target) {
     busy = true;
@@ -117,9 +118,10 @@
   function done(target, at, w) {
     fill(target, w.code);
     filled = true;
-    // A texted code (SMS or email) is typed in only, never submitted (owner, 2026-10-25): he checks it first.
+    filledAt = Date.now();
+    // A texted code (SMS or email) is typed in only, never submitted (the owner, 2026-10-25): he checks it first.
     if (w.via === "text") { say(at, "Sphinx: filled from your texted code. Check it and continue."); return null; }
-    // His fingerprint was the yes, so the code is sent on too (owner, 2026-10-23): the form the code box is in is
+    // His fingerprint was the yes, so the code is sent on too (the owner, 2026-10-23): the form the code box is in is
     // submitted, as pressing Enter would, never a guessed button (it could be Cancel or "try another way").
     const form = at.form || at.closest("form");
     // Only a form that posts back to this page's own origin: one the page points elsewhere (an injected form) gets the
@@ -137,7 +139,7 @@
   async function ask(target) {
     const at = target.fields[0];
     // The code page often doesn't show who is signing in (GitHub's doesn't): fall back to the user name he typed on this
-    // site's sign-in page in this tab, so the phone picks between his two accounts itself (owner, 2026-10-23).
+    // site's sign-in page in this tab, so the phone picks between his two accounts itself (the owner, 2026-10-23).
     const user = D.userHint([...document.querySelectorAll("input")].map(desc), document.body?.innerText || "") || remembered();
     // When the field was first seen, for the worker's timing trace (the gap from seen to asked).
     const r = await send({ t: "ask", user, seen: seenAt });
@@ -170,9 +172,9 @@
     // A click counts too: after a fill the field keeps focus, so clicking it again fires no focus event.
     // Only his real gesture (isTrusted): a page script calling focus() or click() in a loop can't flood his phone with
     // fingerprint prompts (security review 2026-10-26).
-    const again = (e) => { if (e.isTrusted && !quiet && may("focus")) go(find() || target); };
+    const again = (e) => { const t = find() || target; if (e.isTrusted && !quiet && may("focus", t)) go(t); };
     target.fields.filter((el) => !armed.has(el)).forEach((el) => { armed.add(el); el.addEventListener("focus", again); el.addEventListener("click", again); });
-    // And as soon as the field is there, once per page (owner, 2026-10-25): the phone asks while he reaches for it.
+    // And as soon as the field is there, once per page (the owner, 2026-10-25): the phone asks while he reaches for it.
     if (may("seen")) { auto.add(location.href); go(target); }
   }
 
@@ -200,7 +202,7 @@
     console.log("SPHINX", new Date().toISOString().slice(11, 23), "asking the phone (ready)");
     const r = await send({ t: "ready", user });
     console.log("SPHINX", new Date().toISOString().slice(11, 23), "ready answer", JSON.stringify(r));
-    if (el && document.contains(el)) say(el, r?.ok ? "Sphinx: the code is ready for 30 s" : `Sphinx: not ready (${r?.why || "no answer"})`);
+    if (el && document.contains(el)) say(el, r?.ok ? "Sphinx: the code is ready for 60 s" : `Sphinx: not ready (${r?.why || "no answer"})`);
   }
   const onPassword = (e) => { if (e.target instanceof HTMLInputElement && e.target.type === "password") ready(e.type, e.isTrusted, e.target); };
   document.addEventListener("input", onPassword, true);
