@@ -529,12 +529,35 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
   return true;
 });
 
-chrome.runtime.onStartup.addListener(() => { currentOffer().catch(() => {}); register().catch(() => {}); phoneStatus(true).catch(() => {}); alarm(); });
-chrome.runtime.onInstalled.addListener(() => { register().catch(() => {}); phoneStatus(true).catch(() => {}); alarm(); menus(); });   // an update replaces the old persistent registration
-chrome.permissions.onRemoved.addListener(() => { register().catch(() => {}); });
+// The content script's registration lasts one browser session and was made only on install, startup and a sites
+// refresh: one attempt that failed left every saved site silent until the next refresh (2026-10-27, after a reload).
+// Now it is checked on every wake and before a page loads, and a failure is logged and tried again.
+let healing = null;
+export function heal(tries = 3) {
+  return (healing ??= (async () => {
+    if (typeof chrome.scripting?.getRegisteredContentScripts !== "function") return false;
+    for (let i = 0; i < tries; i++) {
+      try {
+        if ((await chrome.scripting.getRegisteredContentScripts({ ids: ["codes"] })).length) return true;
+        if (!(await get("pairing")) || !((await get("domains"))?.list || []).length) return false;
+        await register();
+        return true;
+      } catch (e) {
+        console.warn("Sphinx: content script not registered:", String(e?.message || e));
+        await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+      }
+    }
+    return false;
+  })().finally(() => { healing = null; }));
+}
+
+chrome.runtime.onStartup.addListener(() => { currentOffer().catch(() => {}); heal(); phoneStatus(true).catch(() => {}); alarm(); });
+chrome.runtime.onInstalled.addListener(() => { heal(); phoneStatus(true).catch(() => {}); alarm(); menus(); });   // an update replaces the old persistent registration
+chrome.permissions.onRemoved.addListener(() => { register().catch((e) => console.warn("Sphinx: register failed:", String(e?.message || e))); });
+heal();   // every wake of the worker
 // A tab that loads a new page loses its green (a saved site's content script says so again), but keeps blinking while a
 // request it sent still waits (a password form's submit navigates); a closed one is forgotten.
-chrome.tabs?.onUpdated?.addListener((id, info) => { const t = tabs.get(id); if (info.status === "loading" && t) { t.siteSaved = false; t.filled = false; paint(id); } });
+chrome.tabs?.onUpdated?.addListener((id, info) => { if (info.status === "loading") heal(); const t = tabs.get(id); if (info.status === "loading" && t) { t.siteSaved = false; t.filled = false; paint(id); } });
 chrome.tabs?.onRemoved?.addListener((id) => { tabs.delete(id); });
 
 // ---- handoff: links, text and small files between the phone and this laptop (docs/DESIGN.md, "Handoff") ----
