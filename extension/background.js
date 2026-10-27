@@ -785,6 +785,8 @@ async function popup(m) {
       if (!it) return { ok: false, why: "no such file" };
       if (!Number.isInteger(m.downloadId)) return { ok: false, why: "no download" };
       downloading.set(m.downloadId, m.id);
+      // A small download can finish before this message arrives: Chrome's current state settles it (Codex, 2026-10-27).
+      try { const [d] = await chrome.downloads.search({ id: m.downloadId }); if (d?.state) await downloaded({ id: d.id, state: { current: d.state } }); } catch { /* no downloads API (tests) */ }
       return { ok: true };
     }
     case "sendLink": return handoff({ type: "link", url: m.url, open: m.open === true });

@@ -158,4 +158,10 @@ test("a received file downloads only through the popup, and must match its hash"
   await _test.downloaded({ id: 8, state: { current: "complete" } });
   assert.ok(calls.some(([m, p]) => m === "DELETE" && p === `/v1/files/${fid}`));
   assert.equal(store.inbox.find((x) => x.id === it.id).saved, true);   // kept, marked
+  // One that finished before its "saved" arrived is settled from Chrome's current state.
+  store.inbox = store.inbox.map((x) => (x.id === it.id ? { ...x, saved: undefined } : x));
+  chrome.downloads = { search: async ({ id }) => (id === 9 ? [{ id: 9, state: "complete" }] : []) };
+  assert.equal((await ask({ t: "saved", id: it.id, downloadId: 9 }, POPUP)).ok, true);
+  assert.equal(store.inbox.find((x) => x.id === it.id).saved, true);
+  delete chrome.downloads;
 });
