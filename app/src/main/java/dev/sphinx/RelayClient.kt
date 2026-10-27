@@ -1,5 +1,6 @@
 package dev.sphinx
 
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -51,7 +52,8 @@ object RelayClient {
         return x != null && x == origin(b)
     }
 
-    private fun call(base: String, method: String, path: String, body: ByteArray?, headers: Map<String, String>, readMs: Int = 15_000): String? {
+    /** The connection, sent and answered 2xx (else [Failed]); the caller reads its body and disconnects. */
+    private fun open(base: String, method: String, path: String, body: ByteArray?, headers: Map<String, String>, readMs: Int): HttpURLConnection {
         val c = URL(base + path).openConnection() as HttpURLConnection
         try {
             c.requestMethod = method
@@ -66,10 +68,23 @@ object RelayClient {
                 c.outputStream.use { it.write(body) }
             }
             val status = c.responseCode
-            if (status == 204) return null
             if (status !in 200..299) throw Failed(status)
+            return c
+        } catch (e: Exception) { c.disconnect(); throw e }
+    }
+
+    private fun call(base: String, method: String, path: String, body: ByteArray?, headers: Map<String, String>, readMs: Int = 15_000): String? {
+        val c = open(base, method, path, body, headers, readMs)
+        try {
+            if (c.responseCode == 204) return null
             return c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
         } finally { c.disconnect() }
+    }
+
+    /** A GET whose body is streamed into [sink] as it arrives (the app's APK), never held in memory. */
+    private fun stream(base: String, path: String, headers: Map<String, String>, sink: OutputStream, readMs: Int) {
+        val c = open(base, "GET", path, null, headers, readMs)
+        try { c.inputStream.use { it.copyTo(sink) } } finally { c.disconnect() }
     }
 
     private fun signed(p: Pairing, method: String, path: String, body: Any?, readMs: Int = 15_000, query: String = ""): String? {
@@ -118,4 +133,16 @@ object RelayClient {
     fun dropFile(p: Pairing, fid: String) { signed(p, "DELETE", "/v1/files/$fid", null) }
 
     fun reply(p: Pairing, rid: String, blob: String) { signed(p, "POST", "/v1/replies", mapOf("rid" to rid, "blob" to blob)) }
+
+    // ---- the app's own update (Update.kt): a release the relay's owner put there, served to any pairing ----
+
+    /** The relay's current release as its JSON text, or null when it has none (404). */
+    fun app(p: Pairing): String? = try { signed(p, "GET", "/v1/app", null) } catch (e: Failed) { if (e.status == 404) null else throw e }
+
+    /** The release's APK, streamed into [sink] (signed like every call; a long read timeout for the file). */
+    fun appFile(p: Pairing, sink: OutputStream) {
+        val path = "/v1/app/file"
+        val h = SphinxCrypto.signed(p.relayKey, p.pid, "GET", URL(p.relay + path).path, "", ByteArray(0), System.currentTimeMillis())
+        stream(p.relay, path, h, sink, readMs = 120_000)
+    }
 }

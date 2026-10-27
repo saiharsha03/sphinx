@@ -14,9 +14,11 @@ class PrivacyTest {
     @Test fun theAccountsAndPairingsLiveOnlyInTheSealedPrefs() {
         val store = File(src, "SphinxStore.kt").readText()
         assertTrue(store.contains("SphinxStore(prefs::read, prefs::write, keys, dropKey = keys::delete, backup = Backups.local(app)"))
-        // Only the sealed prefs and the clipboard's own nonce use SharedPreferences; no database.
+        // Only the sealed prefs, the clipboard's own nonce and the update version last announced (a number) use
+        // SharedPreferences; no database.
         val prefsUsers = all().filter { it.readText().contains("getSharedPreferences(") }.map { it.name }.toSet()
-        assertEquals(setOf("Vault.kt"), prefsUsers)
+        assertEquals(setOf("Vault.kt", "Update.kt"), prefsUsers)
+        assertTrue(File(src, "Update.kt").readText().contains("prefs.edit().putLong(NOTIFIED, r.versionCode)"))
         assertFalse(all().any { it.readText().let { t -> t.contains("SQLiteOpenHelper") || t.contains("openFileOutput") } })
         // Files only in two folders: the sealed backup (backup/) and the Keys safe's sealed contents (safe/).
         val dirs = all().flatMap { f -> Regex("""File\((?:c\.applicationContext|app)\.filesDir, "([^"]+)"\)""").findAll(f.readText()).map { it.groupValues[1] }.toList() }.toSet()

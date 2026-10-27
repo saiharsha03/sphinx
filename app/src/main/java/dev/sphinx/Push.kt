@@ -64,13 +64,16 @@ object Push {
 
 /**
  * The heartbeat: re-registers the FCM token (a relay restarted, a token changed), fetches anything a lost wake left in
- * the inboxes, and lets the relay see the phone (the laptop's icon says "reachable" for 30 minutes after).
+ * the inboxes, lets the relay see the phone (the laptop's icon says "reachable" for 30 minutes after), and asks it for
+ * a newer Sphinx (Update).
  */
 class SphinxBeat(c: Context, p: WorkerParameters) : Worker(c, p) {
     override fun doWork(): Result {
         if (SphinxStore.get(applicationContext).pairings().isEmpty()) return Result.success()
         runCatching { Push.register(applicationContext) }
         runCatching { Sphinx.wake(applicationContext) }.onFailure { Log.warn("beat failed", it.javaClass.simpleName) }
+        // And whether the relay has a newer Sphinx (one notification per release).
+        runCatching { Update.check(applicationContext) }
         return Result.success()
     }
 }
