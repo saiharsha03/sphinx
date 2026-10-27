@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Updating itself from your relay: Android's own installer, opened only after the APK's hash and signing key checked out. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- The update's download runs as a foreground service, so Android doesn't throttle it once the app is off screen. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:allowBackup="true"
@@ -72,6 +75,9 @@
 
         <!-- A handoff notification's Copy. -->
         <receiver android:name=".CopyReceiver" android:exported="false" />
+
+        <!-- The update's download, with its progress as a notification. -->
+        <service android:name=".UpdateService" android:exported="false" android:foregroundServiceType="dataSync" />
 
         <!-- Hands the downloaded update (cache/update/ only) to Android's installer; nothing else is served. -->
         <provider

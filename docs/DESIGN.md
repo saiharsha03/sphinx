@@ -191,7 +191,8 @@ phrase, BK, or a secret. Not built (owner, 2026-10-26): email codes, a non-Googl
   and hands them to `Sphinx.wake`, which runs carried blobs through the same path a fetched one takes
   (`SphinxLogic.drain`, `Sphinx.handle`: pairing lookup, seal, counter, expiry), then fetches (`GET /v1/inbox`)
   and acks; a carried blob that was taken isn't run twice, a refused one doesn't stand in for the fetched one.
-- **No live connection.** No foreground service, no permanent notification, no long poll. Besides the wake, the phone
+- **No live connection.** No foreground service, no permanent notification, no long poll (the one foreground service,
+  `UpdateService`, runs a tapped update's download and ends with it: see App update). Besides the wake, the phone
   fetches each inbox once when the app opens or comes to the front (MainActivity), and in `SphinxBeat` every 15 minutes
   (which also re-registers the token). Pairing first asks Firebase for the token: without one (no google-services.json
   in the build, no Play services) it says so and pairs nothing. A relay that answers `{push: false}` (no service
@@ -209,6 +210,14 @@ order (size, sha256, a readable package named `dev.sphinx` whose versionCode is 
 one, and signing certificates equal to the installed app's), and only then handed to Android's installer through a
 FileProvider; Android still asks once. "Install unknown apps" must be allowed for Sphinx the first time. A build signed
 with any other key, or a tampered file, never reaches the installer.
+
+The download runs in `UpdateService`, a `dataSync` foreground service with a progress notification, started by the
+tap and stopped when the file is there: Android throttles a plain thread's network once the app is off screen (the
+first update crawled at 20 KB/s until the app was reopened). The installer opens only with the app in front (Android
+drops a start from the background); off screen, a "downloaded, tap to install" notification brings the app back and
+`Update.resume` opens it. A downloaded file that still passes every check is reused by the next tap (a check that
+throws counts as a fail). A newer release is also a popup over the home screen (`UpdateDialog`): Later puts it away for
+that release until the app next opens.
 
 ## Pairing
 The extension's options page shows a QR: `sphinx:1?p=<pairing id>&k=<laptop X25519 public>&s=<16-byte secret>&r=<relay>&n=<name>[&t=<relay token>]`.

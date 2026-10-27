@@ -69,10 +69,14 @@ class PrivacyTest {
     }
 
     @Test fun noLiveConnectionOnlyTheFcmWakeTheAppInFrontAndTheHeartbeat() {
-        // No foreground service, no permanent notification, no long poll.
+        // No foreground service, no permanent notification, no long poll. The one exception: the update's download
+        // (UpdateService, dataSync, a tap away, over when the file is), so Android doesn't throttle it off screen.
         val manifest = File("src/main/AndroidManifest.xml").readText()
-        assertFalse(manifest.contains("FOREGROUND_SERVICE") || manifest.contains("foregroundServiceType"))
-        assertFalse(all().any { it.readText().let { t -> t.contains("startForeground") || t.contains("readMs = 40_000") } })
+        assertEquals(1, Regex("FOREGROUND_SERVICE_[A-Z_]+").findAll(manifest).count())
+        assertTrue(manifest.contains("android:name=\".UpdateService\" android:exported=\"false\" android:foregroundServiceType=\"dataSync\""))
+        assertFalse(all().any { it.name != "UpdateService.kt" && it.readText().let { t -> t.contains("startForeground(") || t.contains("readMs = 40_000") } })
+        val service = File(src, "UpdateService.kt").readText()
+        assertTrue(service.contains("stopForeground(STOP_FOREGROUND_REMOVE)") && service.contains("START_NOT_STICKY"))
         assertTrue(File(src, "RelayClient.kt").readText().contains("query = \"wait=0\""))
         // Pairing without an FCM token says so instead of pairing something that could never be woken.
         assertTrue(File(src, "Sphinx.kt").readText().contains("val token = Push.token(c) ?: error("))

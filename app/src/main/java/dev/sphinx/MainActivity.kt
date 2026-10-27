@@ -170,6 +170,7 @@ fun SphinxScreen(first: Tab = Tab.ACCOUNTS) {
         unlock()
     }
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        Update.front = false
         stoppedAt = android.os.SystemClock.elapsedRealtime()
         if (AppLock.onStop(AppLock.inside(), ctx.getSystemService(android.os.PowerManager::class.java)?.isInteractive != false)) lock()
     }
@@ -180,7 +181,9 @@ fun SphinxScreen(first: Tab = Tab.ACCOUNTS) {
         if (AppLock.onStart(stoppedAt, now, wasInside)) { lock(); unlock() }
         // The app in front: one look at each inbox (the only fetch besides the FCM wake and the heartbeat).
         Thread { runCatching { Sphinx.wake(app) } }.start()
-        // And whether the relay holds a newer Sphinx (its own call, no wake).
+        // And whether the relay holds a newer Sphinx (its own call, no wake); a checked file waiting goes to the installer now.
+        Update.front = true
+        Update.resume(app)
         Update.checkInBackground(app)
         bump++
     }

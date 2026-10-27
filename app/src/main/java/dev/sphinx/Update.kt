@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -45,7 +46,10 @@ data class AppRelease(val versionCode: Long, val versionName: String, val sha256
 sealed class UpdateState {
     object None : UpdateState()
     class Available(val release: AppRelease) : UpdateState()
-    class Downloading(val release: AppRelease) : UpdateState()
+    /** [done] bytes of the release's size so far. */
+    class Downloading(val release: AppRelease, val done: Long = 0L) : UpdateState() {
+        val percent: Int get() = if (release.size <= 0) 0 else (done * 100 / release.size).toInt().coerceIn(0, 100)
+    }
     class Ready(val release: AppRelease, val path: String) : UpdateState()
     class Failed(val release: AppRelease?, val why: String) : UpdateState()
 }
@@ -121,6 +125,8 @@ object Update {
     /** The notification's tap opens MainActivity with this extra true: it shows Settings' update row. */
     const val EXTRA = "sphinx.update"
     private const val NOTE = 8_100
+    const val NOTE_READY = 8_101
+    const val NOTE_DOWNLOAD = 8_102
     private const val PREFS = "sphinx_update"
     private const val NOTIFIED = "notified"
     private const val FOLDER = "update"
@@ -166,9 +172,7 @@ object Update {
         if (prefs.getLong(NOTIFIED, 0L) == r.versionCode) return
         prefs.edit().putLong(NOTIFIED, r.versionCode).apply()
         val nm = c.getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Sphinx updates", NotificationManager.IMPORTANCE_DEFAULT).apply {
-            description = "A newer Sphinx is on your relay"
-        })
+        channel(nm)
         val open = PendingIntent.getActivity(c, NOTE, Intent(c, MainActivity::class.java).putExtra(EXTRA, true), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val n = NotificationCompat.Builder(c, CHANNEL)
             .setSmallIcon(R.drawable.ic_notify)
@@ -201,31 +205,92 @@ object Update {
             set(UpdateState.Failed(r, "Allow Sphinx to install updates (Android settings), then tap Update again."))
             return
         }
-        set(UpdateState.Downloading(r))
         val dir = File(app.cacheDir, FOLDER).apply { mkdirs() }
-        dir.listFiles()?.forEach { it.delete() }
         val file = File(dir, r.file)
-        val store = SphinxStore.get(app)
-        val pairings = store.pairings().filter { !it.signer }.sortedBy { if (it.pid == from) 0 else 1 }
-        val p = pairings.firstOrNull() ?: return set(UpdateState.Failed(r, "No laptop paired: nowhere to fetch it from."))
-        try {
-            file.outputStream().use { out -> RelayClient.appFile(p, Capped(out, r.size.toLong())) }
-        } catch (e: Exception) {
-            file.delete()
-            Log.warn("update download failed", e.javaClass.simpleName)
-            set(UpdateState.Failed(r, if (e is Capped.TooBig) "The download is bigger than the release says." else "The download failed (${e.javaClass.simpleName}). Try again."))
-            return
-        }
-        val why = runCatching { UpdateRules.verified(r, archive(app), file.length(), sha256(file), read(app, file)) }
-            .getOrElse { "The download couldn't be checked (${it.javaClass.simpleName})." }
-        if (why != null) {
-            file.delete()
-            Log.warn("update refused", why)
-            set(UpdateState.Failed(r, why))
-            return
+        // A file from an earlier try that still checks out is not fetched again (the owner, 2026-10-27: the installer
+        // never showed, the next tap downloaded all 31 MB a second time).
+        val kept = checks(app, r, file)
+        if (!kept) {
+            set(UpdateState.Downloading(r))
+            dir.listFiles()?.forEach { it.delete() }
+            val store = SphinxStore.get(app)
+            val pairings = store.pairings().filter { !it.signer }.sortedBy { if (it.pid == from) 0 else 1 }
+            val p = pairings.firstOrNull() ?: return set(UpdateState.Failed(r, "No laptop paired: nowhere to fetch it from."))
+            try {
+                var last = 0L
+                cancelled = false
+                val started = System.currentTimeMillis()
+                file.outputStream().use { out ->
+                    RelayClient.appFile(p, Capped(out, r.size.toLong()) { n ->
+                        if (cancelled || System.currentTimeMillis() - started > DEADLINE_MS) throw Stopped()
+                        if (n - last >= STEP || n == r.size.toLong()) { last = n; set(UpdateState.Downloading(r, n)) }
+                    })
+                }
+            } catch (e: Exception) {
+                file.delete()
+                Log.warn("update download failed", e.javaClass.simpleName)
+                set(UpdateState.Failed(r, when (e) {
+                    is Capped.TooBig -> "The download is bigger than the release says."
+                    is Stopped -> "The download took too long and was stopped. Try again."
+                    else -> "The download failed (${e.javaClass.simpleName}). Try again."
+                }))
+                return
+            }
+            val why = runCatching { UpdateRules.verified(r, archive(app), file.length(), sha256(file), read(app, file)) }
+                .getOrElse { "The download couldn't be checked (${it.javaClass.simpleName})." }
+            if (why != null) {
+                file.delete()
+                Log.warn("update refused", why)
+                set(UpdateState.Failed(r, why))
+                return
+            }
         }
         set(UpdateState.Ready(r, file.path))
         Log.info("update ready", r.versionCode.toString())
+        if (front) openInstaller(app, r, file, ::set) else announce(app, r)
+    }
+
+    /** Whether [file] is [r] as checked ([UpdateRules.verified]); a check that throws is a no (fail closed). */
+    private fun checks(app: Context, r: AppRelease, file: File): Boolean = file.isFile && file.length() == r.size.toLong() &&
+        runCatching { UpdateRules.verified(r, archive(app), file.length(), sha256(file), read(app, file)) }.getOrElse { "unverifiable" } == null
+
+    /** Set by [cancel]: the next bytes written throw, the download fails and its thread ends. */
+    @Volatile private var cancelled = false
+    /** A download longer than this is given up (Android 15 ends a dataSync service at 6 h anyway). */
+    private const val DEADLINE_MS = 30L * 60 * 1000
+
+    /** Stops a download under way (the service's timeout, Codex 2026-10-27): it ends as a failure that says why. */
+    fun cancel() { cancelled = true }
+
+    /** Whether a download or install is running. */
+    fun busy(): Boolean = installing.get()
+
+    /** Reported every so many bytes of a download. */
+    private const val STEP = 256L * 1024
+
+    /** Whether MainActivity is on screen (set by its start and stop): Android lets only an app in front open the installer. */
+    @Volatile var front = false
+
+    /** The release whose installer opened by itself: once per download, or a cancelled install would reopen it on every return. */
+    @Volatile private var opened = 0L
+
+    /** The app back in front with a checked file waiting: the installer opens now (the tap on the notification lands here). */
+    fun resume(c: Context) {
+        val app = c.applicationContext
+        val s = _state.value as? UpdateState.Ready ?: return
+        if (opened == s.release.versionCode) return
+        val file = File(s.path)
+        // Checked again (hash and parse, off the main thread: Codex, 2026-10-27) before it goes to the installer: the
+        // cache sat there while the app was off screen. Only if the app is still in front with that file waiting.
+        Thread {
+            if (!checks(app, s.release, file)) { file.delete(); _state.compareAndSet(s, UpdateState.Available(s.release)); return@Thread }
+            if (front && _state.value === s && opened != s.release.versionCode) openInstaller(app, s.release, file) { _state.value = it }
+        }.start()
+    }
+
+    private fun openInstaller(app: Context, r: AppRelease, file: File, set: (UpdateState) -> Unit) {
+        opened = r.versionCode
+        app.getSystemService(NotificationManager::class.java)?.cancel(NOTE_READY)
         val uri = FileProvider.getUriForFile(app, "${app.packageName}.files", file)
         val i = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -236,9 +301,41 @@ object Update {
         }
     }
 
+    /** The file is checked and waiting while the app is off screen: one tap brings Sphinx back and opens the installer. */
+    private fun announce(c: Context, r: AppRelease) {
+        val nm = c.getSystemService(NotificationManager::class.java) ?: return
+        channel(nm)
+        val open = PendingIntent.getActivity(c, NOTE_READY, Intent(c, MainActivity::class.java).putExtra(EXTRA, true), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = NotificationCompat.Builder(c, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("Sphinx ${r.versionName} is downloaded")
+            .setContentText("Tap to install it.")
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        runCatching { nm.notify(NOTE_READY, n) }.onFailure { Log.warn("update not shown", it.javaClass.simpleName) }
+    }
+
+    fun channel(nm: NotificationManager) {
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Sphinx updates", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = "A newer Sphinx is on your relay"
+        })
+    }
+
+    /** The service's thread died: the row and the card say so. */
+    fun fail(r: AppRelease, why: String) { _state.value = UpdateState.Failed(r, why) }
+
+    /** The release the service is to fetch (same process: no need to carry it in the intent). */
+    @Volatile var pending: AppRelease? = null
+
+    /** Starts the download in [UpdateService] (a foreground service: off screen, a plain thread's network is throttled). */
     fun installInBackground(c: Context, r: AppRelease) {
         val app = c.applicationContext
-        Thread { runCatching { install(app, r) }.onFailure { Log.warn("update failed", it.javaClass.simpleName); _state.value = UpdateState.Failed(r, "The update failed (${it.javaClass.simpleName}).") } }.start()
+        pending = r
+        runCatching { ContextCompat.startForegroundService(app, Intent(app, UpdateService::class.java)) }.onFailure {
+            Log.warn("update service not started", it.javaClass.simpleName)
+            Thread { runCatching { install(app, r) }.onFailure { e -> Log.warn("update failed", e.javaClass.simpleName); _state.value = UpdateState.Failed(r, "The update failed (${e.javaClass.simpleName}).") } }.start()
+        }
     }
 
     /** This app, as installed. */
@@ -259,12 +356,15 @@ object Update {
         return UpdateRules.sha256Hex(md.digest())
     }
 
+    /** The download was cancelled or ran past its deadline. */
+    private class Stopped : IOException("stopped")
+
     /** Writes through up to [max] bytes and refuses the next: a body longer than the release says stops at once. */
-    private class Capped(private val out: OutputStream, private val max: Long) : OutputStream() {
+    private class Capped(private val out: OutputStream, private val max: Long, private val onCount: (Long) -> Unit = {}) : OutputStream() {
         class TooBig : IOException("too big")
         private var n = 0L
-        override fun write(b: Int) { if (++n > max) throw TooBig(); out.write(b) }
-        override fun write(b: ByteArray, off: Int, len: Int) { n += len; if (n > max) throw TooBig(); out.write(b, off, len) }
+        override fun write(b: Int) { if (++n > max) throw TooBig(); out.write(b); onCount(n) }
+        override fun write(b: ByteArray, off: Int, len: Int) { n += len; if (n > max) throw TooBig(); out.write(b, off, len); onCount(n) }
         override fun flush() = out.flush()
         override fun close() = out.close()
     }
@@ -306,7 +406,7 @@ fun UpdateCard(state: UpdateState, release: AppRelease, onLater: () -> Unit, onU
             Text("Sphinx ${release.versionName} is ready", style = Type.bodyLg.copy(fontWeight = FontWeight.SemiBold), color = Sx.p.text)
             release.notes?.takeIf { it.isNotBlank() }?.let { Text(it, style = Type.bodySm, color = Sx.p.text2) }
             when (state) {
-                is UpdateState.Downloading -> Text("Downloading…", style = Type.bodySm, color = Sx.p.text2)
+                is UpdateState.Downloading -> Text("Downloading… ${state.percent}%", style = Type.bodySm, color = Sx.p.text2)
                 is UpdateState.Ready -> Text("Android is asking to install it. If you cancelled, tap Update again.", style = Type.bodySm, color = Sx.p.text2)
                 is UpdateState.Failed -> Text(state.why, style = Type.bodySm, color = Sx.p.danger)
                 else -> {}
@@ -333,7 +433,7 @@ fun UpdatePane(state: UpdateState, version: String, onCheck: () -> Unit, onUpdat
             is UpdateState.Available -> ListRow("Update to ${state.release.versionName}", state.release.notes, rule = true) {
                 SxButton("Update", { onUpdate(state.release) }, small = true)
             }
-            is UpdateState.Downloading -> ListRow("Update to ${state.release.versionName}", "Downloading…", rule = true) {
+            is UpdateState.Downloading -> ListRow("Update to ${state.release.versionName}", "Downloading… ${state.percent}%", rule = true) {
                 SxButton("Update", {}, enabled = false, small = true)
             }
             is UpdateState.Ready -> ListRow("Update to ${state.release.versionName}", "Android is asking to install it.", rule = true)
